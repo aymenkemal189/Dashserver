@@ -29,7 +29,7 @@ pool.on('error', (err) => {
     console.error('Neon DB Pool Error:', err);
 });
 
-// Auto-run DB Migrations
+// Auto-run DB Migrations (ነጠላ ወጥ Balance ብቻ እንዲኖር የተስተካከለ)
 (async () => {
     try {
         await pool.query(`
@@ -38,9 +38,7 @@ pool.on('error', (err) => {
                 telegram_id BIGINT UNIQUE NOT NULL,
                 first_name VARCHAR(100),
                 username VARCHAR(100),
-                balance NUMERIC(12, 2) DEFAULT 0.00,
-                real_balance NUMERIC(12, 2) DEFAULT 0.00 CHECK (real_balance >= 0),
-                bonus_balance NUMERIC(12, 2) DEFAULT 0.00 CHECK (bonus_balance >= 0),
+                balance NUMERIC(12, 2) DEFAULT 0.00 CHECK (balance >= 0),
                 total_deposited NUMERIC(12, 2) DEFAULT 0.00 CHECK (total_deposited >= 0),
                 total_withdrawn NUMERIC(12, 2) DEFAULT 0.00,
                 total_won NUMERIC(12, 2) DEFAULT 0.00,
@@ -49,6 +47,14 @@ pool.on('error', (err) => {
                 referral_rewarded BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- ቀደም ሲል ለነበሩ ዳታቤዞች real_balance ካለ ወደ balance እንዲጠቃለል ማረጋገጫ
+            DO $$ 
+            BEGIN 
+                IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='real_balance') THEN
+                    UPDATE users SET balance = COALESCE(real_balance, 0) + COALESCE(balance, 0) WHERE real_balance > 0;
+                END IF;
+            END $$;
 
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
@@ -96,7 +102,7 @@ pool.on('error', (err) => {
                 UNIQUE(user_id, promo_id)
             );
         `);
-        console.log('✅ Database Schema verified successfully');
+        console.log('✅ Database Schema verified & unified balance initialized');
     } catch (e) {
         console.error('Migration notice:', e.message);
     }
@@ -117,6 +123,9 @@ function checkAdminAuth(req, res, next) {
     }
     next();
 }
+
+// ================= FAST KENO INTERNAL BRIDGE SECRET ================= //
+const KENO_SHARED_SECRET = process.env.KENO_SHARED_SECRET || 'FAST_KENO_DASH_SECRET_KEY_2026';
 
 // ================= TELEGRAM BOT & NOTIFICATIONS ================= //
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -200,7 +209,7 @@ bot.start(async (ctx) => {
         );
 
         ctx.reply(
-            `እንኳን ወደ <b>Dash Bingo ⚡</b> በደህና መጡ!\n\n🎁 <b>የ 20 ETB ነፃ ቦነስ</b> ተዘጋጅቶልዎታል። አሁኑኑ ከታች ያለውን ይጫኑና ይጀምሩ፦`, 
+            `እንኳን ወደ <b>Dash Bingo ⚡</b> በደህና መጡ!\n\n🎁 <b>የ 20 ETB ነፃ ስጦታ</b> ተዘጋጅቶልዎታል። አሁኑኑ ከታች ያለውን ይጫኑና ይጀምሩ፦`, 
             {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
@@ -213,7 +222,7 @@ bot.start(async (ctx) => {
     }
 });
 
-// ================= GAME ENGINE ================= //
+// ================= GAME ENGINE (BINGO) ================= //
 const CARD_PRICE = 10;
 const HOUSE_COMMISSION = 0.20;
 const SELECTION_SECONDS = 30;
@@ -314,15 +323,7 @@ setInterval(async () => {
         if (winners.length > 0) {
             gameState.status = 'GAME_OVER';
 
-            const allCards = Object.values(gameState.selectedCards);
-            const totalRealCards = allCards.filter(c => c.isRealMoney).length;
-            const totalBonusCards = allCards.filter(c => !c.isRealMoney).length;
-
-            const realPoolPrize = (totalRealCards * CARD_PRICE) * (1 - HOUSE_COMMISSION);
-            const bonusPoolPrize = (totalBonusCards * CARD_PRICE) * (1 - HOUSE_COMMISSION);
-
-            const splitRealPrize = realPoolPrize / winners.length;
-            const splitBonusPrize = bonusPoolPrize / winners.length;
+            // ቦነስ የሚባል ነገር ስለሌለ ሙሉ ክፍያው በቀጥታ ለሁሉም እኩል ወደ አንድ Balance ይከፈላል!
             const totalSplitPrize = gameState.totalPrize / winners.length;
 
             const client = await pool.connect();
@@ -330,32 +331,19 @@ setInterval(async () => {
                 await client.query('BEGIN');
                 for (const win of winners) {
                     if (win.userId) {
-                        if (win.isRealMoney) {
-                            await client.query(
-                                `UPDATE users 
-                                 SET real_balance = real_balance + $1, 
-                                     bonus_balance = bonus_balance + $2,
-                                     balance = balance + $3,
-                                     total_won = total_won + $3 
-                                 WHERE id = $4`,
-                                [splitRealPrize, splitBonusPrize, totalSplitPrize, win.userId]
-                            );
-                        } else {
-                            await client.query(
-                                `UPDATE users 
-                                 SET bonus_balance = bonus_balance + $1, 
-                                     balance = balance + $1,
-                                     total_won = total_won + $1 
-                                 WHERE id = $2`,
-                                [totalSplitPrize, win.userId]
-                            );
-                        }
+                        await client.query(
+                            `UPDATE users 
+                             SET balance = balance + $1,
+                                 total_won = total_won + $1 
+                             WHERE id = $2`,
+                            [totalSplitPrize, win.userId]
+                        );
 
                         const uRes = await client.query('SELECT telegram_id FROM users WHERE id = $1', [win.userId]);
                         if (uRes.rows.length > 0) {
                             sendTelegramNotification(
                                 uRes.rows[0].telegram_id,
-                                `🎉 <b>BINGO WINNER! እንኳን ደስ አለዎት!</b>\n\nበካርድ #${win.cardIndex} <b>${totalSplitPrize.toFixed(2)} ETB</b> አሸንፈዋል! ${win.isRealMoney ? `(Real Cash: ${splitRealPrize.toFixed(2)} ETB)` : '(ወደ Bonus Wallet ተጨምሯል)'}`
+                                `🎉 <b>BINGO WINNER! እንኳን ደስ አለዎት!</b>\n\nበካርድ #${win.cardIndex} <b>${totalSplitPrize.toFixed(2)} ETB</b> አሸንፈዋል! ወደ ሒሳብዎ ገቢ ተደርጓል።`
                             );
                         }
                     }
@@ -414,6 +402,97 @@ function resetGame() {
     io.emit('game_reset', gameState);
 }
 
+// ================= 🎱 FAST KENO WALLET SYNC (INTERNAL APIS) ================= //
+
+// 1. Keno ሰርቨር የDash Bingo ተጠቃሚን ባላንስ ለማየት የሚጠራው
+app.post('/api/internal/keno-balance', async (req, res) => {
+    const { secret, telegramId } = req.body;
+    if (secret !== KENO_SHARED_SECRET) {
+        return res.status(403).json({ success: false, message: 'Unauthorized Keno Bridge' });
+    }
+
+    try {
+        const { rows } = await pool.query(
+            `SELECT id, telegram_id, balance FROM users WHERE telegram_id = $1`,
+            [telegramId]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+        res.json({
+            success: true,
+            balance: parseFloat(rows[0].balance || 0)
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 2. Keno ሰርቨር ውርርድ ሲደረግ ወይም ሲያሸንፍ በቀጥታ ከዚህኛው DB ለመቁረጥ/ለመጨመር
+app.post('/api/internal/keno-settle', async (req, res) => {
+    const { secret, telegramId, betAmount, payout, roundId, picks, hits } = req.body;
+    if (secret !== KENO_SHARED_SECRET) {
+        return res.status(403).json({ success: false, message: 'Unauthorized Keno Bridge' });
+    }
+
+    const bet = parseFloat(betAmount) || 0;
+    const win = parseFloat(payout) || 0;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const userRes = await client.query(
+            `SELECT id, telegram_id, balance, total_won FROM users WHERE telegram_id = $1 FOR UPDATE`,
+            [telegramId]
+        );
+
+        if (userRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ success: false, message: 'User not found' });
+        }
+
+        const user = userRes.rows[0];
+        const currentBal = parseFloat(user.balance || 0);
+
+        if (currentBal < bet) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ success: false, message: 'Insufficient balance' });
+        }
+
+        // አንድ ወጥ የሆነውን Balance ማስተካከል
+        const newBalance = currentBal - bet + win;
+
+        await client.query(
+            `UPDATE users 
+             SET balance = $1, 
+                 total_won = total_won + $2 
+             WHERE id = $3`,
+            [newBalance, win, user.id]
+        );
+
+        // ግብይቱን መዝግቦ መያዝ
+        await client.query(
+            `INSERT INTO transactions (user_id, type, payment_method, amount, sms_text, status) 
+             VALUES ($1, 'KENO_BET', 'INTERNAL', $2, $3, 'APPROVED')`,
+            [user.id, bet, `Keno Round #${roundId || 'LIVE'} | Picks: ${JSON.stringify(picks || [])} | Win: ${win}`]
+        );
+
+        await client.query('COMMIT');
+
+        res.json({
+            success: true,
+            newBalance: parseFloat(newBalance.toFixed(2)),
+            payout: win
+        });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Keno Settle Error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    } finally {
+        client.release();
+    }
+});
+
 // ================= USER & PROFILE REST APIS ================= //
 app.post('/api/user/sync', async (req, res) => {
     const { telegramId, firstName, username, ref } = req.body;
@@ -433,7 +512,9 @@ app.post('/api/user/sync', async (req, res) => {
              VALUES ($1, $2, $3, $4) 
              ON CONFLICT (telegram_id) DO UPDATE 
              SET first_name = EXCLUDED.first_name, username = EXCLUDED.username 
-             RETURNING id, telegram_id, first_name, username, real_balance, bonus_balance, (real_balance + bonus_balance) as balance, total_deposited, total_won`,
+             RETURNING id, telegram_id, first_name, username, balance, 
+                       balance as real_balance, 0.00 as bonus_balance, 
+                       total_deposited, total_won`,
             [telegramId, firstName || 'ተጫዋች', username || '', referrerId]
         );
         res.json(rows[0]);
@@ -444,7 +525,11 @@ app.post('/api/user/sync', async (req, res) => {
 
 app.get('/api/user/:telegramId', async (req, res) => {
     try {
-        const { rows } = await pool.query('SELECT *, (real_balance + bonus_balance) as balance FROM users WHERE telegram_id = $1', [req.params.telegramId]);
+        const { rows } = await pool.query(
+            `SELECT *, balance as real_balance, 0.00 as bonus_balance 
+             FROM users WHERE telegram_id = $1`, 
+            [req.params.telegramId]
+        );
         if (rows.length === 0) return res.status(404).json({ error: 'User not found' });
         res.json(rows[0]);
     } catch (err) {
@@ -463,7 +548,7 @@ app.post('/api/user/claim-welcome', async (req, res) => {
             `INSERT INTO users (telegram_id, first_name, username) 
              VALUES ($1, $2, $3) 
              ON CONFLICT (telegram_id) DO UPDATE SET first_name = EXCLUDED.first_name 
-             RETURNING id, bonus_balance, real_balance`,
+             RETURNING id, balance`,
             [telegramId, firstName || 'ተጫዋች', username || '']
         );
         const user = userRes.rows[0];
@@ -475,20 +560,18 @@ app.post('/api/user/claim-welcome', async (req, res) => {
 
         if (checkBonus.rows.length > 0) {
             await client.query('ROLLBACK');
-            return res.status(400).json({ error: 'የእንኳን ደህና መጡ ቦነስዎን ቀደም ሲል ወስደዋል!' });
+            return res.status(400).json({ error: 'የእንኳን ደህና መጡ ስጦታዎን ቀደም ሲል ወስደዋል!' });
         }
 
-        const newBonus = parseFloat(user.bonus_balance || 0) + 20;
+        const newBalance = parseFloat(user.balance || 0) + 20;
         await client.query(
-            `UPDATE users 
-             SET bonus_balance = $1, balance = real_balance + $1 
-             WHERE id = $2`, 
-            [newBonus, user.id]
+            `UPDATE users SET balance = $1 WHERE id = $2`, 
+            [newBalance, user.id]
         );
 
         await client.query(
             `INSERT INTO transactions (user_id, type, payment_method, amount, status) 
-             VALUES ($1, 'WELCOME_BONUS', 'BONUS', 20.00, 'APPROVED')`,
+             VALUES ($1, 'WELCOME_BONUS', 'GIFT', 20.00, 'APPROVED')`,
             [user.id]
         );
 
@@ -496,10 +579,10 @@ app.post('/api/user/claim-welcome', async (req, res) => {
 
         sendTelegramNotification(
             telegramId,
-            `🎁 <b>የ 20 ETB የጨዋታ ቦነስ ተሰጥቶዎታል!</b>\n\nእንኳን ወደ Dash Bingo በደህና መጡ! 2 ዙር በነፃ ይጫወቱ። መልካም እድል!`
+            `🎁 <b>የ 20 ETB የጨዋታ ስጦታ ተሰጥቶዎታል!</b>\n\nእንኳን ወደ Dash Bingo በደህና መጡ! 2 ዙር በነፃ ይጫወቱ። መልካም እድል!`
         );
 
-        res.json({ success: true, bonus_balance: newBonus, message: '🎉 እንኳን ደስ አለዎት! የ 20 ብር ቦነስ ወደ Bonus Walletዎ ገቢ ሆኗል!' });
+        res.json({ success: true, balance: newBalance, message: '🎉 እንኳን ደስ አለዎት! የ 20 ብር ስጦታ ወደ ሒሳብዎ ገቢ ሆኗል!' });
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(500).json({ error: err.message });
@@ -532,7 +615,7 @@ app.post('/api/deposit/telebirr-verify', async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        const userRes = await client.query('SELECT id, telegram_id, real_balance, bonus_balance FROM users WHERE telegram_id = $1 FOR UPDATE', [telegramId]);
+        const userRes = await client.query('SELECT id, telegram_id, balance FROM users WHERE telegram_id = $1 FOR UPDATE', [telegramId]);
         if (userRes.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም' });
@@ -590,16 +673,14 @@ app.post('/api/deposit/telebirr-verify', async (req, res) => {
         }
 
         const verifiedAmount = parseFloat(gatewayResponse.amount || finalAmount);
-        const newRealBalance = parseFloat(user.real_balance || 0) + verifiedAmount;
-        const newTotalBalance = newRealBalance + parseFloat(user.bonus_balance || 0);
+        const newBalance = parseFloat(user.balance || 0) + verifiedAmount;
 
         await client.query(
             `UPDATE users 
-             SET real_balance = $1, 
-                 total_deposited = total_deposited + $2,
-                 balance = $3 
-             WHERE id = $4`,
-            [newRealBalance, verifiedAmount, newTotalBalance, user.id]
+             SET balance = $1, 
+                 total_deposited = total_deposited + $2 
+             WHERE id = $3`,
+            [newBalance, verifiedAmount, user.id]
         );
 
         await client.query(
@@ -612,15 +693,15 @@ app.post('/api/deposit/telebirr-verify', async (req, res) => {
 
         sendTelegramNotification(
             telegramId,
-            `✅ <b>የቴሌብር ዴፖዚትዎ በራስ-ሰር ጸድቋል!</b>\n\nመጠን፡ <b>${verifiedAmount.toFixed(2)} ETB</b>\nRef: <code>${ref}</code>\nየ Real Wallet ሒሳብዎ፡ <b>${newRealBalance.toFixed(2)} ETB</b>\n\nአሁኑኑ ገብተው ይጫወቱ!`
+            `✅ <b>የቴሌብር ዴፖዚትዎ በራስ-ሰር ጸድቋል!</b>\n\nመጠን፡ <b>${verifiedAmount.toFixed(2)} ETB</b>\nRef: <code>${ref}</code>\nየአሁኑ ሒሳብዎ፡ <b>${newBalance.toFixed(2)} ETB</b>\n\nአሁኑኑ ገብተው ይጫወቱ!`
         );
 
         res.json({
             success: true,
             amount: verifiedAmount,
             ref,
-            newRealBalance,
-            message: `🎉 እንኳን ደስ አለዎት! ${verifiedAmount.toFixed(2)} ETB በራስ-ሰር ተረጋግጦ ወደ Real Walletዎ ገቢ ሆኗል!`
+            newRealBalance: newBalance,
+            message: `🎉 እንኳን ደስ አለዎት! ${verifiedAmount.toFixed(2)} ETB በራስ-ሰር ተረጋግጦ ወደ ሒሳብዎ ገቢ ሆኗል!`
         });
 
     } catch (err) {
@@ -650,7 +731,7 @@ app.post('/api/withdraw', async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const userRes = await client.query('SELECT id, real_balance, bonus_balance, total_deposited FROM users WHERE telegram_id = $1 FOR UPDATE', [telegramId]);
+        const userRes = await client.query('SELECT id, balance, total_deposited FROM users WHERE telegram_id = $1 FOR UPDATE', [telegramId]);
         if (userRes.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም' });
@@ -666,11 +747,11 @@ app.post('/api/withdraw', async (req, res) => {
             });
         }
 
-        // ከ real_balance ብቻ ነው የሚወጣው
-        if (parseFloat(user.real_balance || 0) < withdrawAmount) {
+        // አንድ ወጥ Balance ማረጋገጫ
+        if (parseFloat(user.balance || 0) < withdrawAmount) {
             await client.query('ROLLBACK');
             return res.status(400).json({ 
-                error: `በ Real Walletዎ ውስጥ በቂ ሒሳብ የለዎትም! (ያለዎት Real Balance: ${(user.real_balance || 0)} ETB)` 
+                error: `በቂ ሒሳብ የለዎትም! (ያለዎት ሒሳብ: ${(user.balance || 0)} ETB)` 
             });
         }
 
@@ -692,8 +773,7 @@ app.post('/api/withdraw', async (req, res) => {
 
         await client.query(
             `UPDATE users 
-             SET real_balance = real_balance - $1, 
-                 balance = (real_balance - $1) + bonus_balance 
+             SET balance = balance - $1 
              WHERE id = $2`, 
             [withdrawAmount, user.id]
         );
@@ -731,7 +811,7 @@ app.post('/api/promocode/redeem', async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        const userRes = await client.query('SELECT id, real_balance, bonus_balance FROM users WHERE telegram_id = $1 FOR UPDATE', [telegramId]);
+        const userRes = await client.query('SELECT id, balance FROM users WHERE telegram_id = $1 FOR UPDATE', [telegramId]);
         if (userRes.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም' });
@@ -759,11 +839,11 @@ app.post('/api/promocode/redeem', async (req, res) => {
         await client.query('INSERT INTO promo_claims (user_id, promo_id) VALUES ($1, $2)', [user.id, promo.id]);
         await client.query('UPDATE promo_codes SET times_used = times_used + 1 WHERE id = $1', [promo.id]);
         
-        const newBonus = parseFloat(user.bonus_balance || 0) + parseFloat(promo.reward_amount);
-        await client.query('UPDATE users SET bonus_balance = $1, balance = real_balance + $1 WHERE id = $2', [newBonus, user.id]);
+        const newBalance = parseFloat(user.balance || 0) + parseFloat(promo.reward_amount);
+        await client.query('UPDATE users SET balance = $1 WHERE id = $2', [newBalance, user.id]);
 
         await client.query('COMMIT');
-        res.json({ success: true, message: `እንኳን ደስ አለዎት! ${promo.reward_amount} ብር ወደ Bonus Walletዎ ገቢ ሆኗል።` });
+        res.json({ success: true, message: `እንኳን ደስ አለዎት! ${promo.reward_amount} ብር ወደ ሒሳብዎ ገቢ ሆኗል።` });
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(500).json({ error: err.message });
@@ -843,7 +923,7 @@ app.get('/api/admin/audit', checkAdminAuth, async (req, res) => {
         const { rows } = await pool.query(auditQuery);
         const data = rows[0];
 
-        const userBalRes = await pool.query('SELECT COALESCE(SUM(real_balance), 0) AS total_real_liability, COALESCE(SUM(bonus_balance), 0) AS total_bonus_liability, COUNT(*) AS total_users FROM users');
+        const userBalRes = await pool.query('SELECT COALESCE(SUM(balance), 0) AS total_liability, COUNT(*) AS total_users FROM users');
         const periodUsersRes = await pool.query(`SELECT COUNT(*) AS period_users FROM users ${timeFilterUsers}`);
         const roundRes = await pool.query(`SELECT COALESCE(SUM(owner_rake), 0) AS total_rake, COUNT(*) AS round_count FROM bingo_rounds ${timeFilterRounds}`);
 
@@ -865,8 +945,8 @@ app.get('/api/admin/audit', checkAdminAuth, async (req, res) => {
             totalBonus: parseFloat(data.welcome_bonus) + parseFloat(data.referral_bonus),
             pendingDepositsCount: parseInt(data.pending_deposits_count),
             pendingWithdrawalsCount: parseInt(data.pending_withdrawals_count),
-            totalRealLiability: parseFloat(userBalRes.rows[0].total_real_liability),
-            totalBonusLiability: parseFloat(userBalRes.rows[0].total_bonus_liability),
+            totalRealLiability: parseFloat(userBalRes.rows[0].total_liability),
+            totalBonusLiability: 0.00,
             totalUsersAllTime: parseInt(userBalRes.rows[0].total_users),
             usersInPeriod: parseInt(periodUsersRes.rows[0].period_users),
             totalRake: parseFloat(roundRes.rows[0].total_rake),
@@ -881,7 +961,7 @@ app.get('/api/admin/audit', checkAdminAuth, async (req, res) => {
 // Transactions List API (Filtered & Limit 300)
 app.get('/api/admin/transactions', checkAdminAuth, async (req, res) => {
     const { category, timeframe } = req.query;
-    let conditions = ["t.type IN ('DEPOSIT', 'WITHDRAW')"];
+    let conditions = ["t.type IN ('DEPOSIT', 'WITHDRAW', 'KENO_BET')"];
 
     if (category === 'PENDING') conditions.push("t.status = 'PENDING'");
     else if (category === 'DEPOSIT') conditions.push("t.type = 'DEPOSIT'");
@@ -933,9 +1013,8 @@ app.post('/api/admin/approve', checkAdminAuth, async (req, res) => {
         if (tx.type === 'DEPOSIT') {
             await client.query(
                 `UPDATE users 
-                 SET real_balance = real_balance + $1, 
-                     total_deposited = total_deposited + $1,
-                     balance = balance + $1 
+                 SET balance = balance + $1, 
+                     total_deposited = total_deposited + $1 
                  WHERE id = $2`, 
                 [tx.amount, tx.user_id]
             );
@@ -947,7 +1026,7 @@ app.post('/api/admin/approve', checkAdminAuth, async (req, res) => {
         if (tx.type === 'DEPOSIT') {
             sendTelegramNotification(
                 tx.telegram_id,
-                `✅ <b>ዴፖዚትዎ ጸድቋል!</b>\n\nየ <b>${parseFloat(tx.amount).toFixed(2)} ETB</b> ክፍያዎ ተረጋግጦ ወደ Real Walletዎ ገቢ ሆኗል። አሁኑኑ ገብተው ይጫወቱ!`
+                `✅ <b>ዴፖዚትዎ ጸድቋል!</b>\n\nየ <b>${parseFloat(tx.amount).toFixed(2)} ETB</b> ክፍያዎ ተረጋግጦ ወደ ሒሳብዎ ገቢ ሆኗል። አሁኑኑ ገብተው ይጫወቱ!`
             );
         } else {
             sendTelegramNotification(
@@ -976,8 +1055,7 @@ app.post('/api/admin/reject', checkAdminAuth, async (req, res) => {
         if (tx.type === 'WITHDRAW') {
             await client.query(
                 `UPDATE users 
-                 SET real_balance = real_balance + $1, 
-                     balance = balance + $1 
+                 SET balance = balance + $1 
                  WHERE id = $2`, 
                 [tx.amount, tx.user_id]
             );
@@ -988,7 +1066,7 @@ app.post('/api/admin/reject', checkAdminAuth, async (req, res) => {
 
         sendTelegramNotification(
             tx.telegram_id,
-            `🔄 <b>ውድ የ Dash Bingo ተጫዋች፦</b>\n\nየጠየቁት የ <b>${parseFloat(tx.amount).toFixed(2)} ETB</b> ማውጣት ጥያቄ ወደ Real Walletዎ በሰላም ተመልሷል! ✅\n\nትብብርዎን ከልብ እናመሰግናለን! 🙏⚡\n@DashBingo`
+            `🔄 <b>ውድ የ Dash Bingo ተጫዋች፦</b>\n\nየጠየቁት የ <b>${parseFloat(tx.amount).toFixed(2)} ETB</b> ማውጣት ጥያቄ ወደ ሒሳብዎ በሰላም ተመልሷል! ✅\n\nትብብርዎን ከልብ እናመሰግናለን! 🙏⚡\n@DashBingo`
         );
 
         res.json({ success: true, message: 'ግብይቱ ውድቅ ተደርጎ ገንዘቡ ወደ ተጫዋቹ ዋሌት ተመልሷል!' });
@@ -1000,7 +1078,7 @@ app.post('/api/admin/reject', checkAdminAuth, async (req, res) => {
     }
 });
 
-// ================= 🎁 BONUS CASHBACK FOR REJECTED PLAYERS ================= //
+// ================= 🎁 CASHBACK FOR REJECTED PLAYERS ================= //
 app.get('/api/admin/cashback/candidates', checkAdminAuth, async (req, res) => {
     try {
         const { rows } = await pool.query(`
@@ -1054,15 +1132,14 @@ app.post('/api/admin/cashback/process', checkAdminAuth, async (req, res) => {
             if (cashbackAmount > 0) {
                 await client.query(
                     `UPDATE users 
-                     SET bonus_balance = bonus_balance + $1, 
-                         balance = real_balance + (bonus_balance + $1) 
+                     SET balance = balance + $1 
                      WHERE id = $2`,
                     [cashbackAmount, user.user_id]
                 );
 
                 await client.query(
                     `INSERT INTO transactions (user_id, type, payment_method, amount, sms_text, status) 
-                     VALUES ($1, 'BONUS_CASHBACK', 'BONUS', $2, 'ልዩ የካሽባክ ተመላሽ', 'APPROVED')`,
+                     VALUES ($1, 'CASHBACK', 'CASH', $2, 'ልዩ የካሽባክ ተመላሽ', 'APPROVED')`,
                     [user.user_id, cashbackAmount]
                 );
 
@@ -1071,7 +1148,7 @@ app.post('/api/admin/cashback/process', checkAdminAuth, async (req, res) => {
 
                 sendTelegramNotification(
                     user.telegram_id,
-                    `🎉 <b>ውድ ${user.first_name}፣ ልዩ የካሽባክ ስጦታ ደርሶዎታል!</b> 🎁\n\nባለፈው በሲስተም ማሻሻያ ምክንያት ለተፈጠረው መዘግየት የ <b>${pct}% ካሽባክ</b> (<b>${cashbackAmount.toFixed(2)} ETB</b>) ወደ <b>Bonus Walletዎ</b> ገቢ ተደርጓል! ✅\n\nአሁኑኑ ገብተው በነፃ ይጫወቱ፤ ተጫውተው ያሸነፉትን ሙሉ ድል ማውጣት ይችላሉ።\n\nስለ ትዕግስትዎ ከልብ እናመሰግናለን! 🙏⚡\n👉 <a href="https://t.me/dashbingobot/eth">ለመጫወት እዚህ ይጫኑ</a>`
+                    `🎉 <b>ውድ ${user.first_name}፣ ልዩ የካሽባክ ስጦታ ደርሶዎታል!</b> 🎁\n\nየ <b>${pct}% ካሽባክ</b> (<b>${cashbackAmount.toFixed(2)} ETB</b>) በቀጥታ ወደ <b>ሒሳብዎ</b> ገቢ ተደርጓል! ✅\n\nአሁኑኑ ገብተው መጫወት ወይም ማውጣት ይችላሉ።\n\nስለ ትዕግስትዎ ከልብ እናመሰግናለን! 🙏⚡\n👉 <a href="https://t.me/dashbingobot/eth">ለመጫወት እዚህ ይጫኑ</a>`
                 );
             }
         }
@@ -1079,7 +1156,7 @@ app.post('/api/admin/cashback/process', checkAdminAuth, async (req, res) => {
         await client.query('COMMIT');
         res.json({
             success: true,
-            message: `ለ ${count} ተጫዋቾች በድምሩ ${totalGiven.toFixed(2)} ETB የቦነስ ካሽባክ ተከፋፍሏል!`
+            message: `ለ ${count} ተጫዋቾች በድምሩ ${totalGiven.toFixed(2)} ETB ካሽባክ ተከፋፍሏል!`
         });
 
     } catch (err) {
@@ -1091,9 +1168,9 @@ app.post('/api/admin/cashback/process', checkAdminAuth, async (req, res) => {
     }
 });
 
-// 🎯 Manual Balance Adjustment by ID
+// 🎯 Manual Balance Adjustment by ID (ወጥ Balance ብቻ)
 app.post('/api/admin/user/adjust-balance', checkAdminAuth, async (req, res) => {
-    const { targetId, walletType, amount, note } = req.body;
+    const { targetId, amount, note } = req.body;
     const adjustAmount = parseFloat(amount);
 
     if (!targetId || isNaN(adjustAmount) || adjustAmount <= 0) {
@@ -1116,40 +1193,29 @@ app.post('/api/admin/user/adjust-balance', checkAdminAuth, async (req, res) => {
 
         const user = userRes.rows[0];
 
-        if (walletType === 'real') {
-            await client.query(
-                `UPDATE users 
-                 SET real_balance = real_balance + $1, 
-                     balance = balance + $1 
-                 WHERE id = $2`,
-                [adjustAmount, user.id]
-            );
-        } else {
-            await client.query(
-                `UPDATE users 
-                 SET bonus_balance = bonus_balance + $1, 
-                     balance = balance + $1 
-                 WHERE id = $2`,
-                [adjustAmount, user.id]
-            );
-        }
+        await client.query(
+            `UPDATE users 
+             SET balance = balance + $1 
+             WHERE id = $2`,
+            [adjustAmount, user.id]
+        );
 
         await client.query(
             `INSERT INTO transactions (user_id, type, payment_method, amount, sms_text, status) 
-             VALUES ($1, 'ADMIN_CREDIT', $2, $3, $4, 'APPROVED')`,
-            [user.id, walletType === 'real' ? 'REAL' : 'BONUS', adjustAmount, note || 'በአድሚን የተሞላ']
+             VALUES ($1, 'ADMIN_CREDIT', 'MANUAL', $2, $3, 'APPROVED')`,
+            [user.id, adjustAmount, note || 'በአድሚን የተሞላ']
         );
 
         await client.query('COMMIT');
 
         sendTelegramNotification(
             user.telegram_id,
-            `💳 <b>የሒሳብ ማስተካከያ ተደርጓል!</b>\n\nየ <b>${adjustAmount.toFixed(2)} ETB</b> ብር ወደ <b>${walletType === 'real' ? 'Real Wallet' : 'Bonus Wallet'}ዎ</b> ተጨምሯል! ✅\n\nመልካም ጨዋታ! ⚡`
+            `💳 <b>የሒሳብ ማስተካከያ ተደርጓል!</b>\n\nየ <b>${adjustAmount.toFixed(2)} ETB</b> ብር ወደ <b>ሒሳብዎ</b> ተጨምሯል! ✅\n\nመልካም ጨዋታ! ⚡`
         );
 
         res.json({
             success: true,
-            message: `ለ ${user.first_name} (${user.telegram_id}) ${adjustAmount} ETB ወደ ${walletType.toUpperCase()} Wallet ተጨምሯል!`
+            message: `ለ ${user.first_name} (${user.telegram_id}) ${adjustAmount} ETB ወደ ዋሌት ተጨምሯል!`
         });
 
     } catch (err) {
@@ -1181,7 +1247,7 @@ app.post('/api/admin/broadcast', checkAdminAuth, async (req, res) => {
     }
 });
 
-// Weekly Bonus Distribute
+// Weekly Reward Distribute
 app.post('/api/admin/distribute-weekly-bonus', checkAdminAuth, async (req, res) => {
     const client = await pool.connect();
     try {
@@ -1204,18 +1270,18 @@ app.post('/api/admin/distribute-weekly-bonus', checkAdminAuth, async (req, res) 
             if (i === 0) bonus = 300;
             else if (i < 5) bonus = 250;
 
-            await client.query('UPDATE users SET bonus_balance = bonus_balance + $1, balance = balance + $1 WHERE id = $2', [bonus, rows[i].id]);
+            await client.query('UPDATE users SET balance = balance + $1 WHERE id = $2', [bonus, rows[i].id]);
             distributed.push({ name: rows[i].first_name, bonus });
 
             sendTelegramNotification(
                 rows[i].telegram_id,
-                `🏆 <b>እንኳን ደስ አለዎት! የሳምንቱ ምርጥ ተጫዋች ሽልማት!</b>\n\nበሳምንቱ ከፍተኛ ካርድ በመቁረጥዎ የ <b>${bonus} ETB</b> ቦነስ አሸንፈዋል!`
+                `🏆 <b>እንኳን ደስ አለዎት! የሳምንቱ ምርጥ ተጫዋች ሽልማት!</b>\n\nበሳምንቱ ከፍተኛ ካርድ በመቁረጥዎ የ <b>${bonus} ETB</b> ሽልማት ወደ ሒሳብዎ ገቢ ሆኗል!`
             );
         }
 
         await client.query('UPDATE users SET cards_bought_this_week = 0');
         await client.query('COMMIT');
-        res.json({ success: true, message: 'የሳምንቱ ቦነስ ለ 10 ሰዎች ተከፋፍሏል!', distributed });
+        res.json({ success: true, message: 'የሳምንቱ ሽልማት ለ 10 ሰዎች ተከፋፍሏል!', distributed });
     } catch (err) {
         await client.query('ROLLBACK');
         res.status(500).json({ error: err.message });
@@ -1239,7 +1305,7 @@ app.post('/api/admin/create-promocode', checkAdminAuth, async (req, res) => {
     }
 });
 
-// ================= SOCKET.IO: BUY CARD ================= //
+// ================= SOCKET.IO: BUY CARD (ወጥ BALANCE) ================= //
 io.on('connection', (socket) => {
     socket.emit('game_init', {
         roundNumber: gameState.roundNumber,
@@ -1272,7 +1338,7 @@ io.on('connection', (socket) => {
         try {
             await client.query('BEGIN');
             const userRes = await client.query(
-                `SELECT id, first_name, real_balance, bonus_balance, total_deposited, referred_by, referral_rewarded 
+                `SELECT id, first_name, balance, total_deposited, referred_by, referral_rewarded 
                  FROM users WHERE telegram_id = $1 FOR UPDATE`, 
                 [telegramId]
             );
@@ -1282,52 +1348,39 @@ io.on('connection', (socket) => {
             }
             const user = userRes.rows[0];
 
-            let isRealMoney = false;
-
-            if (parseFloat(user.real_balance || 0) >= CARD_PRICE) {
-                await client.query(
-                    `UPDATE users 
-                     SET real_balance = real_balance - $1, 
-                         balance = (real_balance - $1) + bonus_balance,
-                         cards_bought_this_week = cards_bought_this_week + 1 
-                     WHERE id = $2`, 
-                    [CARD_PRICE, user.id]
-                );
-                isRealMoney = true;
-            } else if (parseFloat(user.bonus_balance || 0) >= CARD_PRICE) {
-                await client.query(
-                    `UPDATE users 
-                     SET bonus_balance = bonus_balance - $1, 
-                         balance = real_balance + (bonus_balance - $1),
-                         cards_bought_this_week = cards_bought_this_week + 1 
-                     WHERE id = $2`, 
-                    [CARD_PRICE, user.id]
-                );
-                isRealMoney = false;
-            } else {
+            // ቦነስ የሚባል ነገር የለም፤ ከነጠላ Balance ብቻ ይቆረጣል
+            if (parseFloat(user.balance || 0) < CARD_PRICE) {
                 await client.query('ROLLBACK');
                 socket.emit('error_msg', `ሒሳብዎ በቂ አይደለም! ካርድ ለመቁረጥ ቢያንስ ${CARD_PRICE} ETB ያስፈልጋል።`);
                 return;
             }
 
+            await client.query(
+                `UPDATE users 
+                 SET balance = balance - $1, 
+                     cards_bought_this_week = cards_bought_this_week + 1 
+                 WHERE id = $2`, 
+                [CARD_PRICE, user.id]
+            );
+
+            // ሪፈራል ካለው
             if (user.referred_by && !user.referral_rewarded && parseFloat(user.total_deposited || 0) >= MINIMUM_DEPOSIT) {
                 await client.query(
                     `UPDATE users 
-                     SET real_balance = real_balance + 10, 
-                         balance = balance + 10 
+                     SET balance = balance + 10 
                      WHERE telegram_id = $1`, 
                     [user.referred_by]
                 );
                 await client.query('UPDATE users SET referral_rewarded = TRUE WHERE id = $1', [user.id]);
                 await client.query(
                     `INSERT INTO transactions (user_id, type, payment_method, amount, status) 
-                     SELECT id, 'REFERRAL_BONUS', 'BONUS', 10.00, 'APPROVED' 
+                     SELECT id, 'REFERRAL_BONUS', 'REWARD', 10.00, 'APPROVED' 
                      FROM users WHERE telegram_id = $1`,
                     [user.referred_by]
                 );
                 sendTelegramNotification(
                     user.referred_by,
-                    `🎉 <b>የ 10 ETB ሪፈራል ቦነስ አግኝተዋል!</b>\n\nየጋበዙት ተጫዋች (${user.first_name}) ዴፖዚት አድርጎ ጨዋታ ስለጀመረ 10 ETB ወደ Real Walletዎ ገቢ ሆኗል!`
+                    `🎉 <b>የ 10 ETB ሪፈራል ሽልማት አግኝተዋል!</b>\n\nየጋበዙት ተጫዋች (${user.first_name}) ዴፖዚት አድርጎ ጨዋታ ስለጀመረ 10 ETB ወደ ሒሳብዎ ገቢ ሆኗል!`
                 );
             }
 
@@ -1335,8 +1388,7 @@ io.on('connection', (socket) => {
             gameState.selectedCards[cIndex] = {
                 userId: user.id,
                 userName: user.first_name,
-                numbers: generatedCard,
-                isRealMoney
+                numbers: generatedCard
             };
 
             await client.query('COMMIT');
@@ -1363,7 +1415,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// ================= START SERVER ================= //
 // 🔍 1. እውነተኛ ዴፖዚት ኖሯቸው ዊዝድሮው ሪጀክት የተደረገባቸውን እጩዎች ማምጫ
 app.get('/api/admin/cashback/real-candidates', checkAdminAuth, async (req, res) => {
     try {
@@ -1399,10 +1450,10 @@ app.get('/api/admin/cashback/real-candidates', checkAdminAuth, async (req, res) 
     }
 });
 
-// 🚀 2. ለእነዚህ ሰዎች ብቻ በዴፖዚታቸው መጠን ወደ Real Wallet ካሽባክ መላኪያ
+// 🚀 2. ለእነዚህ ሰዎች ብቻ በዴፖዚታቸው መጠን ወደ Wallet ካሽባክ መላኪያ
 app.post('/api/admin/cashback/process-real', checkAdminAuth, async (req, res) => {
     const { userIds, selectAll, percentage } = req.body;
-    const pct = parseFloat(percentage) || 100; // ዲፎልት 100% (ሙሉ ዴፖዚታቸውን ለመመለስ)
+    const pct = parseFloat(percentage) || 100;
 
     const client = await pool.connect();
     try {
@@ -1446,33 +1497,28 @@ app.post('/api/admin/cashback/process-real', checkAdminAuth, async (req, res) =>
         let count = 0;
 
         for (const user of rows) {
-            // በዴፖዚት ባደረጉት መጠን ልክ ፐርሰንቱን ማስላት
             const realCashbackAmount = (parseFloat(user.total_dep) * pct) / 100;
 
             if (realCashbackAmount > 0) {
-                // 💵 በቀጥታ ወደ REAL BALANCE መደመር!
                 await client.query(
                     `UPDATE users 
-                     SET real_balance = real_balance + $1, 
-                         balance = balance + $1 
+                     SET balance = balance + $1 
                      WHERE id = $2`,
                     [realCashbackAmount, user.user_id]
                 );
 
-                // ግብይቱን መመዝገብ
                 await client.query(
                     `INSERT INTO transactions (user_id, type, payment_method, amount, sms_text, status) 
-                     VALUES ($1, 'CASHBACK', 'REAL', $2, 'ለእውነተኛ ዴፖዚት የተመለሰ Real Cash', 'APPROVED')`,
+                     VALUES ($1, 'CASHBACK', 'REAL', $2, 'ለእውነተኛ ዴፖዚት የተመለሰ Cash', 'APPROVED')`,
                     [user.user_id, realCashbackAmount]
                 );
 
                 totalGiven += realCashbackAmount;
                 count++;
 
-                // 💌 ለተጠቃሚው በቴሌግራም ቦት የሚላክ ልዩ ማብራሪያ
                 sendTelegramNotification(
                     user.telegram_id,
-                    `💵 <b>ውድ ${user.first_name}፣ እውነተኛ ተቀማጭዎ ወደ Real Wallet ተመልሷል!</b> ✅\n\nቀደም ሲል ያደረጉት ተቀማጭ (Deposit) ከቦነስ ጋር ተቀላቅሎ በነበረው የሲስተም ማሻሻያ ምክንያት ለተፈጠረው መስተጓጎል የ <b>${pct}% ተመላሽ</b> (<b>${realCashbackAmount.toFixed(2)} ETB</b>) በቀጥታ ወደ <b>Real Walletዎ (ሊያወጡት ወደሚችሉት ሒሳብ)</b> ገቢ ተደርጓል! 🎉\n\nአሁኑኑ ገብተው መጫወት ወይም ማውጣት ይችላሉ።\n\nስለ ታማኝነትዎና ትዕግስትዎ ከልብ እናመሰግናለን! 🙏⚡\n@DashBingo`
+                    `💵 <b>ውድ ${user.first_name}፣ እውነተኛ ተቀማጭዎ ወደ ሒሳብዎ ተመልሷል!</b> ✅\n\nቀደም ሲል ያደረጉት ተቀማጭ (Deposit) በነበረው የሲስተም ማሻሻያ ምክንያት ለተፈጠረው መስተጓጎል የ <b>${pct}% ተመላሽ</b> (<b>${realCashbackAmount.toFixed(2)} ETB</b>) በቀጥታ ወደ <b>ሒሳብዎ</b> ገቢ ተደርጓል! 🎉\n\nአሁኑኑ ገብተው መጫወት ወይም ማውጣት ይችላሉ።\n\nስለ ታማኝነትዎና ትዕግስትዎ ከልብ እናመሰግናለን! 🙏⚡\n@DashBingo`
                 );
             }
         }
@@ -1480,7 +1526,7 @@ app.post('/api/admin/cashback/process-real', checkAdminAuth, async (req, res) =>
         await client.query('COMMIT');
         res.json({
             success: true,
-            message: `ለ ${count} እውነተኛ ዴፖዚተሮች በድምሩ ${totalGiven.toFixed(2)} ETB ወደ Real Wallet ገቢ ተደርጓል!`
+            message: `ለ ${count} እውነተኛ ዴፖዚተሮች በድምሩ ${totalGiven.toFixed(2)} ETB ወደ ዋሌት ገቢ ተደርጓል!`
         });
 
     } catch (err) {
@@ -1492,6 +1538,7 @@ app.post('/api/admin/cashback/process-real', checkAdminAuth, async (req, res) =>
     }
 });
 
+// ================= START SERVER ================= //
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, async () => {
     console.log(`⚡ Dash Bingo Ultra-Server running on port ${PORT}`);
