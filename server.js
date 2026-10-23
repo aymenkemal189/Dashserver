@@ -1080,61 +1080,157 @@ app.post('/api/admin/reject', checkAdminAuth, async (req, res) => {
     }
 });
 
-// ================= 📢 BROADCAST WITH IMAGE & BUTTON ================= //
-app.post('/api/admin/broadcast', checkAdminAuth, async (req, res) => {
-    const { message, imageUrl, buttonText, buttonUrl, isWebApp } = req.body;
-    
-    if (!message) {
-        return res.status(400).json({ error: 'Message (መልእክት) ማስገባት ግዴታ ነው!' });
-    }
 
-    try {
-        const { rows } = await pool.query('SELECT telegram_id FROM users');
-        let sentCount = 0;
+// ================= 📢 REAL-TIME BROADCAST ENGINE (PROGRESS / PAUSE / STOP) ================= //
+let broadcastEngine = {
+    isRunning: false,
+    isPaused: false,
+    shouldStop: false,
+    currentIndex: 0,
+    totalUsers: 0,
+    sentCount: 0,
+    failedCount: 0
+};
 
-        // 🔘 ቁልፍ (Button) ካለ ማዘጋጀት
-        let replyMarkup = undefined;
-        if (buttonText && buttonUrl) {
-            const buttonObj = isWebApp 
-                ? { text: buttonText, web_app: { url: buttonUrl } }
-                : { text: buttonText, url: buttonUrl };
+io.on('connection', (socket) => {
+    // ... ነባሩ የ socket ኮድህ እንዳለ ሆኖ ...
 
-            replyMarkup = {
-                inline_keyboard: [[buttonObj]]
-            };
+    // 1. ብሮድካስት ጀምር
+    socket.on('start_broadcast', async (data) => {
+        const { adminKey, message, imageUrl, buttonText, buttonUrl, isWebApp } = data;
+
+        if (adminKey !== ADMIN_SECRET) {
+            socket.emit('broadcast_error', 'የተሳሳተ Admin Key!');
+            return;
+        }
+        if (!message) {
+            socket.emit('broadcast_error', 'መልእክት ማስገባት ግዴታ ነው!');
+            return;
         }
 
-        for (const user of rows) {
-            try {
-                const options = {
-                    parse_mode: 'HTML',
-                    reply_markup: replyMarkup
-                };
+        if (broadcastEngine.isRunning) {
+            socket.emit('broadcast_error', 'ቀደም ሲል የተጀመረ ማስታወቂያ አለ!');
+            return;
+        }
 
-                // 🖼️ ፎቶ (Image URL) ካለ በፎቶ ይላካል
-                if (imageUrl && imageUrl.trim() !== '') {
-                    await bot.telegram.sendPhoto(user.telegram_id, imageUrl.trim(), {
-                        caption: message,
-                        ...options
+        try {
+            const { rows } = await pool.query('SELECT telegram_id FROM users');
+            if (rows.length === 0) {
+                socket.emit('broadcast_error', 'ምንም ተጠቃሚ አልተገኘም!');
+                return;
+            }
+
+            broadcastEngine.isRunning = true;
+            broadcastEngine.isPaused = false;
+            broadcastEngine.shouldStop = false;
+            broadcastEngine.currentIndex = 0;
+            broadcastEngine.totalUsers = rows.length;
+            broadcastEngine.sentCount = 0;
+            broadcastEngine.failedCount = 0;
+
+            let replyMarkup = undefined;
+            if (buttonText && buttonUrl) {
+                const btn = isWebApp 
+                    ? { text: buttonText, web_app: { url: buttonUrl } }
+                    : { text: buttonText, url: buttonUrl };
+                replyMarkup = { inline_keyboard: [[btn]] };
+            }
+
+            const options = { parse_mode: 'HTML', reply_markup: replyMarkup };
+
+            // በዳራ (Background) ውስጥ አንድ በአንድ መላክ መጀመር
+            (async () => {
+                for (let i = 0; i < rows.length; i++) {
+                    if (broadcastEngine.shouldStop) {
+                        break;
+                    }
+
+                    // Pause ከተደረገ መጠበቅ
+                    while (broadcastEngine.isPaused && !broadcastEngine.shouldStop) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+
+                    const user = rows[i];
+                    broadcastEngine.currentIndex = i + 1;
+
+                    try {
+                        if (imageUrl && imageUrl.trim() !== '') {
+                            await bot.telegram.sendPhoto(user.telegram_id, imageUrl.trim(), {
+                                caption: message,
+                                ...options
+                            });
+                        } else {
+                            await bot.telegram.sendMessage(user.telegram_id, message, options);
+                        }
+                        broadcastEngine.sentCount++;
+                    } catch (e) {
+                        broadcastEngine.failedCount++;
+                    }
+
+                    // ለእያንዳንዱ እርምጃ Progress ማሳወቅ
+                    const percent = Math.round((broadcastEngine.currentIndex / broadcastEngine.totalUsers) * 100);
+                    io.emit('broadcast_progress', {
+                        total: broadcastEngine.totalUsers,
+                        current: broadcastEngine.currentIndex,
+                        sent: broadcastEngine.sentCount,
+                        failed: broadcastEngine.failedCount,
+                        percent: percent,
+                        status: 'RUNNING'
                     });
-                } else {
-                    // ፎቶ ከሌለ በመደበኛ ጽሁፍ ይላካል
-                    await bot.telegram.sendMessage(user.telegram_id, message, options);
+
+                    // የቴሌግራም Rate limit ለመከላከል 45ms ፋታ
+                    await new Promise(r => setTimeout(r, 45));
                 }
 
-                sentCount++;
-                // የቴሌግራም Rate limit (Spam block) እንዳይመጣ 40ms ፋታ መስጠት
-                await new Promise(r => setTimeout(r, 40));
-            } catch (err) {
-                // ተጠቃሚው ቦቱን Block አድርጎት ከሆነ ያለምንም ችግር ያልፈዋል
-            }
-        }
+                const finalStatus = broadcastEngine.shouldStop ? 'STOPPED' : 'COMPLETED';
+                io.emit('broadcast_finished', {
+                    status: finalStatus,
+                    sent: broadcastEngine.sentCount,
+                    failed: broadcastEngine.failedCount
+                });
 
-        res.json({ success: true, message: `መልእክቱ ለ ${sentCount} ተጫዋቾች ተልኳል!` });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+                broadcastEngine.isRunning = false;
+            })();
+
+        } catch (err) {
+            broadcastEngine.isRunning = false;
+            socket.emit('broadcast_error', err.message);
+        }
+    });
+
+    // 2. Pause ማድረጊያ
+    socket.on('pause_broadcast', () => {
+        if (broadcastEngine.isRunning) {
+            broadcastEngine.isPaused = true;
+            io.emit('broadcast_paused');
+        }
+    });
+
+    // 3. Resume (እንደገና ማስቀጠያ)
+    socket.on('resume_broadcast', () => {
+        if (broadcastEngine.isRunning && broadcastEngine.isPaused) {
+            broadcastEngine.isPaused = false;
+            io.emit('broadcast_resumed');
+        }
+    });
+
+    // 4. Stop (ሙሉ በሙሉ ማስቆሚያ)
+    socket.on('stop_broadcast', () => {
+        if (broadcastEngine.isRunning) {
+            broadcastEngine.shouldStop = true;
+            broadcastEngine.isPaused = false;
+        }
+    });
 });
+
+
+
+
+
+
+
+
+
 
 // ================= SOCKET.IO: BUY CARD ================= //
 io.on('connection', (socket) => {
