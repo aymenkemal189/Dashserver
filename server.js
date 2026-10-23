@@ -1080,20 +1080,56 @@ app.post('/api/admin/reject', checkAdminAuth, async (req, res) => {
     }
 });
 
+// ================= 📢 BROADCAST WITH IMAGE & BUTTON ================= //
 app.post('/api/admin/broadcast', checkAdminAuth, async (req, res) => {
-    const { message } = req.body;
-    if (!message) return res.status(400).json({ error: 'Message is required' });
+    const { message, imageUrl, buttonText, buttonUrl, isWebApp } = req.body;
+    
+    if (!message) {
+        return res.status(400).json({ error: 'Message (መልእክት) ማስገባት ግዴታ ነው!' });
+    }
 
     try {
         const { rows } = await pool.query('SELECT telegram_id FROM users');
         let sentCount = 0;
+
+        // 🔘 ቁልፍ (Button) ካለ ማዘጋጀት
+        let replyMarkup = undefined;
+        if (buttonText && buttonUrl) {
+            const buttonObj = isWebApp 
+                ? { text: buttonText, web_app: { url: buttonUrl } }
+                : { text: buttonText, url: buttonUrl };
+
+            replyMarkup = {
+                inline_keyboard: [[buttonObj]]
+            };
+        }
+
         for (const user of rows) {
             try {
-                await bot.telegram.sendMessage(user.telegram_id, message, { parse_mode: 'HTML' });
+                const options = {
+                    parse_mode: 'HTML',
+                    reply_markup: replyMarkup
+                };
+
+                // 🖼️ ፎቶ (Image URL) ካለ በፎቶ ይላካል
+                if (imageUrl && imageUrl.trim() !== '') {
+                    await bot.telegram.sendPhoto(user.telegram_id, imageUrl.trim(), {
+                        caption: message,
+                        ...options
+                    });
+                } else {
+                    // ፎቶ ከሌለ በመደበኛ ጽሁፍ ይላካል
+                    await bot.telegram.sendMessage(user.telegram_id, message, options);
+                }
+
                 sentCount++;
-                await new Promise(r => setTimeout(r, 45));
-            } catch (err) {}
+                // የቴሌግራም Rate limit (Spam block) እንዳይመጣ 40ms ፋታ መስጠት
+                await new Promise(r => setTimeout(r, 40));
+            } catch (err) {
+                // ተጠቃሚው ቦቱን Block አድርጎት ከሆነ ያለምንም ችግር ያልፈዋል
+            }
         }
+
         res.json({ success: true, message: `መልእክቱ ለ ${sentCount} ተጫዋቾች ተልኳል!` });
     } catch (err) {
         res.status(500).json({ error: err.message });
