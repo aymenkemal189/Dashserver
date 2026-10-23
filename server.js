@@ -29,7 +29,7 @@ pool.on('error', (err) => {
     console.error('Neon DB Pool Error:', err);
 });
 
-// Auto-run DB Migrations (ነባር ባላንስን በፍጹም የማይነካ ደህንነቱ የተጠበቀ Schema)
+// Auto-run DB Migrations
 (async () => {
     try {
         await pool.query(`
@@ -216,10 +216,31 @@ bot.start(async (ctx) => {
     }
 });
 
-// ================= GAME ENGINE (BINGO) ================= //
+// ================= GAME ENGINE (BINGO & DEMO VIP PLAYERS) ================= //
 const CARD_PRICE = 10;
 const HOUSE_COMMISSION = 0.20;
 const SELECTION_SECONDS = 30;
+
+// 🌟 የፈተሻ ማስተካከያዎች (SETTINGS) 🌟
+const ENABLE_DEMO_BOTS = true;       // ቦቶች እንዲቆርጡ (እውነተኛ ስራ ሲጀመር false ይደረጋል)
+const TEST_LUCKY_MODE = true;        // የእናንተን የመብላት እድል ከፍ ማድረጊያ ሞድ
+const LUCKY_WIN_CHANCE = 1;         // 75% የእናንተን ካርድ ቀድሞ እንዲሞላ ያደርጋል (ከ 0 እስከ 100)
+
+const BOT_NAMES = [
+    "የድል_ጎዳና ⚡", "💎 ብሩህ_አእምሮ ✨", "🦁 የአንበሳ_ፈለግ 🦅", "☕ የቡና_ሰዓት 🤎",
+    "🌙 የሌሊት_ጥላ 🌌", "🎵 የዜማ_ሞገድ 🎧", "❄️ ቀዝቃዛ_አየር 🧊", "🌍 የሀገሬ_ልጅ 🇪🇹",
+    "👑 የንግስና_ጊዜ 💫", "⚡  மின்னል ⚡", "🌹 የፍቅር_ጉዞ 💕", "🍃 የተፈጥሮ_ድምጽ 🌿",
+    "አቤል_ዘአበሻ", "ሰላም_ለእግዚአብሔር", "ዮሐንስ_አሸናፊ", "ዳዊት_ብርሃኑ",
+    "ማርያም_ምስክሬ", "እድለኛው_ሰው", "ምስራቅ_ፀሐይ", "ፍቅሬ_ነህ",
+    "ሐበሻዊው_ሰው", "የአባይ_ልጅ", "የወንዙ_ሞገድ", "የተስፋ_ብርሃን",
+    "乂 𝕯𝖆𝖗𝖐_𝕭𝖔𝖞 乂", "꧁༒ 𝕰𝖙𝖍𝖎𝖔_𝕶𝖎𝖓𝖌 ༒꧂", "༺ 𝕷𝖊𝖌𝖊𝖓𝖉 ༻", "『 𝕾𝖙𝖆𝖗_𝕭𝖔𝖞 』",
+    "ℓσvє_ℓífє ❤️", "𝕯𝖗𝖊𝖆𝖒_𝕮𝖆𝖙𝖈𝖍𝖊𝖗 🌙", "⫸ 𝕯𝖆𝖞_𝕎𝖆𝖑𝖐𝖊𝖗 ⫷", "𝓔𝓽𝓱𝓲𝓸_𝐋𝐢𝐟𝐞 🔥",
+    "𝓠𝓮𝓷𝓮𝔃_𝕭𝖔𝖞 👑", "█▬█ █ ▀█▀ 🇪🇹", "♛ 𝓤𝖑𝖙𝖎𝖒𝖆𝖙𝖊_𝖀𝖘𝖊𝖗 ♛", "꧁★ 𝕬𝖋𝖗𝖎𝖈𝖆_𝕭𝖔𝖞 ★꧂",
+    "░ℬℓα¢к░", "✗ 𝕾𝖍𝖆𝖉𝖔𝖜_𝕶𝖎𝖓𝖌 ✗", "⚡ 𝔓𝖗𝖎𝖓𝖈𝖊 ⚡", "🔥 𝓕𝓪𝖘𝓽_𝕭𝖔𝖞 🔥",
+    "꧁༺ 𝓝𝖎𝖌𝖍𝖙_𝕯𝖊𝖒𝖔𝖓 ༻꧂", "💎 𝓡𝓸𝔂𝓪𝓵_𝕶𝖎𝖓𝖌 💎", "🚀 𝓡𝐨𝐜𝐤𝐞𝐭_𝐌𝐚𝐧 🚀", "🌟 𝓢𝓽𝓪𝓻_𝓛𝓲𝓰𝓱𝓽 🌟",
+    "🦅 𝓔𝓪𝓰𝓵𝓮_𝓔𝔂𝓮 🦅", "🌊 𝓞𝓬𝓮𝓪𝓷_𝓦𝓪𝓿𝓮 🌊", "🍀 𝓛𝓾𝓬𝓴𝔂_𝓑𝓸𝔂 🍀", "🎯 𝓣𝓪𝓻𝓰𝓮𝓽_ℳ𝒶𝓃 🎯",
+    "👑 𝓚𝓲𝓷𝓰_𝓞𝓯_𝓚𝓲𝖓𝖌𝖘 👑", "🔥 𝓕𝓲𝓻𝓮_𝓢𝓽𝖔𝓻𝖒 🔥"
+];
 
 let gameState = {
     roundNumber: 1001,
@@ -231,6 +252,44 @@ let gameState = {
     totalPrize: 0,
     ownerProfit: 0
 };
+
+// 300+ ካርዶች በቡድን እየገቡ እንዲቆርጡ
+function simulateMassivePurchases(count = 12) {
+    if (gameState.status !== 'SELECTION' || !ENABLE_DEMO_BOTS) return;
+
+    for (let i = 0; i < count; i++) {
+        let randomCard;
+        let attempts = 0;
+        do {
+            randomCard = Math.floor(Math.random() * 500) + 1;
+            attempts++;
+        } while (gameState.selectedCards[randomCard] && attempts < 200);
+
+        if (gameState.selectedCards[randomCard]) continue;
+
+        const botName = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+        const generatedCard = generateBingoCard();
+
+        gameState.selectedCards[randomCard] = {
+            userId: null,
+            userName: botName,
+            numbers: generatedCard,
+            isBot: true
+        };
+    }
+
+    const cardCount = Object.keys(gameState.selectedCards).length;
+    const totalPot = cardCount * CARD_PRICE;
+    gameState.totalPrize = totalPot * (1 - HOUSE_COMMISSION);
+    gameState.ownerProfit = totalPot * HOUSE_COMMISSION;
+
+    io.emit('card_taken', {
+        cardIndex: Math.floor(Math.random() * 500) + 1,
+        userName: BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)],
+        totalCards: cardCount,
+        poolPrize: gameState.totalPrize
+    });
+}
 
 function generateBingoCard() {
     const getCols = (min, max) => {
@@ -276,6 +335,12 @@ setInterval(async () => {
         gameState.countdown--;
         io.emit('game_tick', { status: 'SELECTION', countdown: gameState.countdown });
 
+        // 🔥 በየሰከንዱ ከ 10 እስከ 15 ካርዶች እየተቆረጡ 350+ ይደርሳል
+        if (gameState.countdown > 1) {
+            const batch = Math.floor(Math.random() * 5) + 10;
+            simulateMassivePurchases(batch);
+        }
+
         if (gameState.countdown <= 0) {
             const cardCount = Object.keys(gameState.selectedCards).length;
             if (cardCount >= 1) {
@@ -299,10 +364,29 @@ setInterval(async () => {
             return;
         }
 
+        // ================= 🎯 ቁጥር ማውጫ ከነ LUCKY MODE ================= //
         let nextNum;
-        do {
-            nextNum = Math.floor(Math.random() * 75) + 1;
-        } while (gameState.calledNumbers.includes(nextNum));
+        let picked = false;
+
+        // 🌟 Lucky Mode በርቶ ከሆነ የእናንተን ካርድ ቁጥሮች ቀድሞ ይመርጣል
+        if (TEST_LUCKY_MODE && Math.random() * 100 < LUCKY_WIN_CHANCE) {
+            const realPlayerCards = Object.values(gameState.selectedCards).filter(c => !c.isBot);
+            if (realPlayerCards.length > 0) {
+                const targetCard = realPlayerCards[Math.floor(Math.random() * realPlayerCards.length)];
+                const flatNumbers = targetCard.numbers.flat().filter(n => n !== 0 && !gameState.calledNumbers.includes(n));
+                if (flatNumbers.length > 0) {
+                    nextNum = flatNumbers[Math.floor(Math.random() * flatNumbers.length)];
+                    picked = true;
+                }
+            }
+        }
+
+        // መደበኛ የዘፈቀደ ቁጥር
+        if (!picked) {
+            do {
+                nextNum = Math.floor(Math.random() * 75) + 1;
+            } while (gameState.calledNumbers.includes(nextNum));
+        }
 
         gameState.calledNumbers.push(nextNum);
         gameState.currentNumber = nextNum;
@@ -316,14 +400,17 @@ setInterval(async () => {
 
         if (winners.length > 0) {
             gameState.status = 'GAME_OVER';
-
             const totalSplitPrize = gameState.totalPrize / winners.length;
 
             const client = await pool.connect();
             try {
                 await client.query('BEGIN');
+                let realWinnerId = null;
+
                 for (const win of winners) {
-                    if (win.userId) {
+                    if (win.userId && !win.isBot) {
+                        realWinnerId = win.userId;
+
                         // አሸናፊ ገንዘብ በቀጥታ ወደ REAL_BALANCE ገቢ ይደረጋል
                         await client.query(
                             `UPDATE users 
@@ -334,6 +421,13 @@ setInterval(async () => {
                             [totalSplitPrize, win.userId]
                         );
 
+                        // ለኦዲት ወደ transactions ይገባል
+                        await client.query(
+                            `INSERT INTO transactions (user_id, type, payment_method, amount, sms_text, status) 
+                             VALUES ($1, 'BINGO_WIN', 'INTERNAL', $2, $3, 'APPROVED')`,
+                            [win.userId, totalSplitPrize, `Round #${gameState.roundNumber} Winner (Card #${win.cardIndex})`]
+                        );
+
                         const uRes = await client.query('SELECT telegram_id FROM users WHERE id = $1', [win.userId]);
                         if (uRes.rows.length > 0) {
                             sendTelegramNotification(
@@ -341,13 +435,23 @@ setInterval(async () => {
                                 `🎉 <b>BINGO WINNER! እንኳን ደስ አለዎት!</b>\n\nበካርድ #${win.cardIndex} <b>${totalSplitPrize.toFixed(2)} ETB</b> አሸንፈዋል! ወደ Real Walletዎ ገቢ ሆኗል።`
                             );
                         }
+                    } else {
+                        console.log(`🤖 ቦት አሸነፈ: ${win.userName} (Card #${win.cardIndex})`);
                     }
                 }
 
                 await client.query(
                     `INSERT INTO bingo_rounds (round_number, card_price, total_cards, pool_prize, owner_rake, winner_id, winning_card_number)
                      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                    [gameState.roundNumber, CARD_PRICE, Object.keys(gameState.selectedCards).length, gameState.totalPrize, gameState.ownerProfit, winners[0].userId, winners[0].cardIndex]
+                    [
+                        gameState.roundNumber, 
+                        CARD_PRICE, 
+                        Object.keys(gameState.selectedCards).length, 
+                        gameState.totalPrize, 
+                        gameState.ownerProfit, 
+                        realWinnerId, 
+                        winners[0].cardIndex
+                    ]
                 );
                 await client.query('COMMIT');
             } catch (err) {
@@ -397,8 +501,7 @@ function resetGame() {
     io.emit('game_reset', gameState);
 }
 
-// ================= 🎱 FAST KENO WALLET SYNC (ከ REAL_BALANCE ብቻ የሚሰራ) ================= //
-
+// ================= 🎱 FAST KENO WALLET SYNC ================= //
 app.post('/api/internal/keno-balance', async (req, res) => {
     const { secret, telegramId } = req.body;
     if (secret !== KENO_SHARED_SECRET) {
@@ -452,7 +555,6 @@ app.post('/api/internal/keno-settle', async (req, res) => {
             return res.status(400).json({ success: false, message: 'በቂ Real Balance የለዎትም!' });
         }
 
-        // ውርርዱን ቀንሶ አሸናፊውን በቀጥታ ወደ real_balance ማስገባት
         const newBalance = currentBal - bet + win;
 
         await client.query(
@@ -487,7 +589,6 @@ app.post('/api/internal/keno-settle', async (req, res) => {
 });
 
 // ================= USER & PROFILE REST APIS ================= //
-// የነበረውን እውነተኛ real_balance ብቻ ወደ ስክሪኑ ይልካል
 app.post('/api/user/sync', async (req, res) => {
     const { telegramId, firstName, username, ref } = req.body;
     if (!telegramId) return res.status(400).json({ error: 'telegramId is required' });
@@ -532,7 +633,6 @@ app.get('/api/user/:telegramId', async (req, res) => {
     }
 });
 
-// 🚫 የውሸት ቦነስ እንዳይሰጥ ተዘግቷል
 app.post('/api/user/claim-welcome', async (req, res) => {
     res.status(400).json({ error: 'ቦነስ ለጊዜው ተዘግቷል!' });
 });
@@ -621,7 +721,6 @@ app.post('/api/deposit/telebirr-verify', async (req, res) => {
         const verifiedAmount = parseFloat(gatewayResponse.amount || finalAmount);
         const newRealBalance = parseFloat(user.real_balance || 0) + verifiedAmount;
 
-        // በእውነተኛው REAL_BALANCE ላይ ብቻ መጨመር
         await client.query(
             `UPDATE users 
              SET real_balance = $1, 
@@ -661,7 +760,7 @@ app.post('/api/deposit/telebirr-verify', async (req, res) => {
     }
 });
 
-// ================= WITHDRAWAL API (ከ REAL BALANCE ብቻ) ================= //
+// ================= WITHDRAWAL API ================= //
 app.post('/api/withdraw', async (req, res) => {
     const { telegramId, amount, accountNumber, accountName } = req.body;
     const withdrawAmount = parseFloat(amount);
@@ -687,7 +786,6 @@ app.post('/api/withdraw', async (req, res) => {
 
         const user = userRes.rows[0];
 
-        // ቢያንስ 1 ጊዜ 50 ETB ዴፖዚት ማድረግ ግዴታ ነው!
         if (parseFloat(user.total_deposited || 0) < MINIMUM_DEPOSIT) {
             await client.query('ROLLBACK');
             return res.status(400).json({ 
@@ -695,7 +793,6 @@ app.post('/api/withdraw', async (req, res) => {
             });
         }
 
-        // 🛡️ ማውጣት የሚቻለው ከ REAL_BALANCE ብቻ ነው
         const currentReal = parseFloat(user.real_balance || 0);
         if (currentReal < withdrawAmount) {
             await client.query('ROLLBACK');
@@ -704,7 +801,6 @@ app.post('/api/withdraw', async (req, res) => {
             });
         }
 
-        // በቀን ቢበዛ 2 ጊዜ ማውጣት
         const recentWithRes = await client.query(
             `SELECT id FROM transactions 
              WHERE user_id = $1 AND type = 'WITHDRAW' 
@@ -754,12 +850,10 @@ app.post('/api/withdraw', async (req, res) => {
     }
 });
 
-// 🚫 Promo Code Redeem ለጊዜው ተዘግቷል
 app.post('/api/promocode/redeem', async (req, res) => {
     res.status(400).json({ error: 'የፕሮሞ ኮድ አገልግሎት ለጊዜው ተዘግቷል!' });
 });
 
-// Leaderboard & History
 app.get('/api/weekly-top', async (req, res) => {
     try {
         const { rows } = await pool.query(
@@ -797,7 +891,7 @@ app.get('/api/history/:telegramId', async (req, res) => {
     }
 });
 
-// ================= 📊 ALL-TIME & TIMEFRAME-BASED FINANCIAL AUDIT API ================= //
+// ================= 📊 AUDIT API ================= //
 app.get('/api/admin/audit', checkAdminAuth, async (req, res) => {
     const timeframe = req.query.timeframe || 'all';
     let timeFilterTx = "";
@@ -865,10 +959,9 @@ app.get('/api/admin/audit', checkAdminAuth, async (req, res) => {
     }
 });
 
-// Transactions List API (Filtered & Limit 300)
 app.get('/api/admin/transactions', checkAdminAuth, async (req, res) => {
     const { category, timeframe } = req.query;
-    let conditions = ["t.type IN ('DEPOSIT', 'WITHDRAW', 'KENO_BET')"];
+    let conditions = ["t.type IN ('DEPOSIT', 'WITHDRAW', 'KENO_BET', 'BINGO_CARD', 'BINGO_WIN')"];
 
     if (category === 'PENDING') conditions.push("t.status = 'PENDING'");
     else if (category === 'DEPOSIT') conditions.push("t.type = 'DEPOSIT'");
@@ -987,7 +1080,6 @@ app.post('/api/admin/reject', checkAdminAuth, async (req, res) => {
     }
 });
 
-// Broadcast Message
 app.post('/api/admin/broadcast', checkAdminAuth, async (req, res) => {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: 'Message is required' });
@@ -1008,7 +1100,7 @@ app.post('/api/admin/broadcast', checkAdminAuth, async (req, res) => {
     }
 });
 
-// ================= SOCKET.IO: BUY CARD (የተስተካከለው ኦሪጅናል አሰራር) ================= //
+// ================= SOCKET.IO: BUY CARD ================= //
 io.on('connection', (socket) => {
     socket.emit('game_init', {
         roundNumber: gameState.roundNumber,
@@ -1040,7 +1132,6 @@ io.on('connection', (socket) => {
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
-            // 🛡️ ቀጥታ ከ REAL_BALANCE ያነባል!
             const userRes = await client.query(
                 `SELECT id, first_name, real_balance, total_deposited 
                  FROM users WHERE telegram_id = $1 FOR UPDATE`, 
@@ -1054,14 +1145,13 @@ io.on('connection', (socket) => {
 
             const currentReal = parseFloat(user.real_balance || 0);
 
-            // እውነተኛ Real Balance መፈተሽ
             if (currentReal < CARD_PRICE) {
                 await client.query('ROLLBACK');
                 socket.emit('error_msg', `ሒሳብዎ በቂ አይደለም! ካርድ ለመቁረጥ ቢያንስ ${CARD_PRICE} ETB ያስፈልጋል።`);
                 return;
             }
 
-            // ካርድ ሲቆረጥ ከ REAL_BALANCE ብቻ ይቀንሳል
+            // ካርድ ሲቆረጥ ከ REAL_BALANCE ይቀንሳል
             await client.query(
                 `UPDATE users 
                  SET real_balance = real_balance - $1, 
@@ -1071,11 +1161,19 @@ io.on('connection', (socket) => {
                 [CARD_PRICE, user.id]
             );
 
+            // ለኦዲት ወደ transactions ይገባል
+            await client.query(
+                `INSERT INTO transactions (user_id, type, payment_method, amount, sms_text, status) 
+                 VALUES ($1, 'BINGO_CARD', 'INTERNAL', $2, $3, 'APPROVED')`,
+                [user.id, CARD_PRICE, `Round #${gameState.roundNumber} - Card #${cIndex}`]
+            );
+
             const generatedCard = generateBingoCard();
             gameState.selectedCards[cIndex] = {
                 userId: user.id,
                 userName: user.first_name,
-                numbers: generatedCard
+                numbers: generatedCard,
+                isBot: false // እውነተኛ ሰው መሆኑን መለየት
             };
 
             await client.query('COMMIT');
