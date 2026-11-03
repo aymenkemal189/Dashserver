@@ -136,7 +136,7 @@ async function sendTelegramNotification(telegramId, message) {
 }
 
 // ================= VERIFI V5 CREDENTIALS & REGEX ================= //
-const TELEBIRR_API_URL = process.env.TELEBIRR_API_URL || 'https://verifi-server.onrender.com/api/verify';
+const TELEBIRR_API_URL = process.env.TELEBIRR_API_URL || 'https://verifiy-server.app.aletcloud.com/api/verify';
 const TELEBIRR_SECRET_TOKEN = process.env.TELEBIRR_SECRET_TOKEN || 'Verifi_Prod_9842_Aymen_X9!2026';
 const MINIMUM_DEPOSIT = 50;
 
