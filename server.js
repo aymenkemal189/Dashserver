@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
@@ -30,7 +29,7 @@ pool.on('error', (err) => {
     console.error('Neon DB Pool Error:', err);
 });
 
-// Auto-run DB Migrations
+// Auto-run DB Migrations safely
 (async () => {
     try {
         await pool.query(`
@@ -97,7 +96,7 @@ pool.on('error', (err) => {
                 UNIQUE(user_id, promo_id)
             );
         `);
-        console.log('✅ Database Schema verified safely.');
+        console.log('✅ Database Schema verified safely without modifying user balances.');
     } catch (e) {
         console.error('Migration notice:', e.message);
     }
@@ -136,19 +135,19 @@ async function sendTelegramNotification(telegramId, message) {
     }
 }
 
-// ================= VERIFICATION SERVER CONFIG (ALETCLOUD) ================= //
-const VERIFY_API_URL = process.env.VERIFY_API_URL || 'https://verifiy-server.app.aletcloud.com/api/verify';
-const VERIFY_SECRET_TOKEN = process.env.VERIFY_SECRET_TOKEN || 'Verifi_Prod_9842_Aymen_X9!2026';
+// ================= VERIFI V5 CREDENTIALS & REGEX (TELEBIRR & CBE) ================= //
+// በ Render Environment Variablesህ ላይ ያለውን TELEBIRR_API_URL እና TELEBIRR_SECRET_TOKEN ያነባል
+const TELEBIRR_API_URL = process.env.TELEBIRR_API_URL || process.env.VERIFY_API_URL || 'https://verifiy-server.app.aletcloud.com/api/verify';
+const TELEBIRR_SECRET_TOKEN = process.env.TELEBIRR_SECRET_TOKEN || process.env.VERIFY_SECRET_TOKEN || 'Verifi_Prod_9842_Aymen_X9!2026';
 const MINIMUM_DEPOSIT = 50;
 
-// Universal Receipt & Ref Parser for Telebirr & CBE
-function parsePaymentReceipt(input, method = 'TELEBIRR') {
+function parsePaymentInput(input, method = 'TELEBIRR') {
     const text = String(input || '').trim();
     let ref = null;
     let amount = null;
 
-    if (method === 'CBE') {
-        // CBE standard transaction reference: FTxxxxxxxxxx or alphanumeric transaction number
+    if (String(method).toUpperCase() === 'CBE') {
+        // የ CBE ባንክ FT... ወይም Txn ID መለያ
         const cbeMatch = text.match(/\b(FT[A-Z0-9]{8,14})\b/i) || text.match(/(?:Txn\s*ID|Txn\s*Ref|Ref|ቁጥር|ትዕዛዝ)\s*[:፡-]?\s*([A-Z0-9]{8,16})/i);
         if (cbeMatch) {
             ref = cbeMatch[1].toUpperCase();
@@ -156,10 +155,10 @@ function parsePaymentReceipt(input, method = 'TELEBIRR') {
             ref = text.toUpperCase();
         }
     } else {
-        // Telebirr: DJxxxxxxxx
-        const djMatch = text.match(/\b(DJ[A-Z0-9]{8,12})\b/i);
-        if (djMatch) {
-            ref = djMatch[1].toUpperCase();
+        // አዲሶቹን የ 2026 የቴሌብር ቁጥሮች (DJ..., DK..., DL...) በሙሉ ይለያል
+        const tbMatch = text.match(/\b(D[A-Z][A-Z0-9]{8,12})\b/i);
+        if (tbMatch) {
+            ref = tbMatch[1].toUpperCase();
         } else {
             const genericMatch = text.match(/transaction\s*(?:number|id|ref|no)?\s*(?:is|:)?\s*([A-Z0-9]{8,14})/i);
             if (genericMatch) {
@@ -186,6 +185,13 @@ let agentStatus = {
 
 app.get('/api/agents/status', (req, res) => {
     res.json(agentStatus);
+});
+
+app.post('/api/admin/agents/toggle', checkAdminAuth, (req, res) => {
+    const { isOnline } = req.body;
+    agentStatus.telebirr.isOnline = Boolean(isOnline);
+    if (agentStatus.cbe) agentStatus.cbe.isOnline = Boolean(isOnline);
+    res.json({ success: true, agentStatus });
 });
 
 // Bot Start
@@ -228,16 +234,26 @@ bot.start(async (ctx) => {
 const CARD_PRICE = 10;
 const HOUSE_COMMISSION = 0.20;
 const SELECTION_SECONDS = 30;
-const ENABLE_DEMO_BOTS = true;
-const TEST_LUCKY_MODE = true;
-const LUCKY_WIN_CHANCE = 1;
+
+// 🌟 የፈተሻ ማስተካከያዎች (SETTINGS) 🌟
+const ENABLE_DEMO_BOTS = true;       // ቦቶች እንዲቆርጡ
+const TEST_LUCKY_MODE = true;        // የእናንተን የመብላት እድል ከፍ ማድረጊያ ሞድ
+const LUCKY_WIN_CHANCE = 1;          // የእናንተን ካርድ ቀድሞ እንዲሞላ ያደርጋል
 
 const BOT_NAMES = [
     "የድል_ጎዳና ⚡", "💎 ብሩህ_አእምሮ ✨", "🦁 የአንበሳ_ፈለግ 🦅", "☕ የቡና_ሰዓት 🤎",
     "🌙 የሌሊት_ጥላ 🌌", "🎵 የዜማ_ሞገድ 🎧", "❄️ ቀዝቃዛ_አየር 🧊", "🌍 የሀገሬ_ልጅ 🇪🇹",
     "👑 የንግስና_ጊዜ 💫", "⚡  மின்னል ⚡", "🌹 የፍቅር_ጉዞ 💕", "🍃 የተፈጥሮ_ድምጽ 🌿",
     "አቤል_ዘአበሻ", "ሰላም_ለእግዚአብሔር", "ዮሐንስ_አሸናፊ", "ዳዊት_ብርሃኑ",
-    "ማርያም_ምስክሬ", "እድለኛው_ሰው", "ምስራቅ_ፀሐይ", "ፍቅሬ_ነህ"
+    "ማርያም_ምስክሬ", "እድለኛው_ሰው", "ምስራቅ_ፀሐይ", "ፍቅሬ_ነህ",
+    "ሐበሻዊው_ሰው", "የአባይ_ልጅ", "የወንዙ_ሞገድ", "የተስፋ_ብርሃን",
+    "乂 𝕯𝖆𝖗𝖐_𝕭𝖔𝖞 乂", "꧁༒ 𝕰𝖙𝖍𝖎𝖔_𝕶𝖎𝖓𝖌 ༒꧂", "༺ 𝕷𝖊𝖌𝖊𝖓𝖉 ༻", "『 𝕾𝖙𝖆𝖗_𝕭𝖔𝖞 』",
+    "ℓσvє_ℓífє ❤️", "𝕯𝖗𝖊𝖆𝖒_𝕮𝖆𝖙𝖈𝖍𝖊𝖗 🌙", "⫸ 𝕯𝖆𝖞_𝕎𝖆𝖑𝖐𝖊𝖗 ⫷", "𝓔𝓽𝓱𝓲𝓸_𝐋𝐢𝐟𝐞 🔥",
+    "𝓠𝓮𝓷𝓮𝔃_𝕭𝖔𝖞 👑", "█▬█ █ ▀█▀ 🇪🇹", "♛ 𝓤𝖑𝖙𝖎𝖒𝖆𝖙𝖊_𝖀𝖘𝖊𝖗 ♛", "꧁★ 𝕬𝖋𝖗𝖎𝖈𝖆_𝕭𝖔𝖞 ★꧂",
+    "░ℬℓα¢к░", "✗ 𝕾𝖍𝖆𝖉𝖔𝖜_𝕶𝖎𝖓𝖌 ✗", "⚡ 𝔓𝖗𝖎𝖓𝖈𝖊 ⚡", "🔥 𝓕𝓪𝖘𝓽_𝕭𝖔𝖞 🔥",
+    "꧁༺ 𝓝𝖎𝖌𝖍𝖙_𝕯𝖊𝖒𝖔𝖓 ༻꧂", "💎 𝓡𝓸𝔂𝓪𝓵_𝕶𝖎𝖓𝖌 💎", "🚀 𝓡𝐨𝐜𝐤𝐞𝐭_𝐌𝐚𝐧 🚀", "🌟 𝓢𝓽𝓪𝓻_𝓛𝓲𝓰𝓱𝓽 🌟",
+    "🦅 𝓔𝓪𝓰𝓵𝓮_𝓔𝔂𝓮 🦅", "🌊 𝓞𝓬𝓮𝓪𝓷_𝓦𝓪𝓿𝓮 🌊", "🍀 𝓛𝓾𝓬𝓴𝔂_𝓑𝓸𝔂 🍀", "🎯 𝓣𝓪𝓻𝓰𝓮𝓽_ℳ𝒶𝓃 🎯",
+    "👑 𝓚𝓲𝖓ɢ_𝓞𝓯_𝓚𝖎𝖓𝖌𝖘 👑", "🔥 𝓕𝓲𝓻𝓮_𝓢𝓽𝖔𝓻𝖒 🔥"
 ];
 
 let gameState = {
@@ -251,6 +267,7 @@ let gameState = {
     ownerProfit: 0
 };
 
+// 300+ ካርዶች በቡድን እየገቡ እንዲቆርጡ
 function simulateMassivePurchases(count = 12) {
     if (gameState.status !== 'SELECTION' || !ENABLE_DEMO_BOTS) return;
 
@@ -302,7 +319,7 @@ function generateBingoCard() {
     let n = getCols(31, 45);
     let g = getCols(46, 60);
     let o = getCols(61, 75);
-    n[2] = 0;
+    n[2] = 0; // Free Center Star (★)
     return [b, i, n, g, o];
 }
 
@@ -326,12 +343,13 @@ function checkWinner(card, called) {
     return diag1 || diag2;
 }
 
-// Master Game Loop
+// Master Real-Time Game Loop
 setInterval(async () => {
     if (gameState.status === 'SELECTION') {
         gameState.countdown--;
         io.emit('game_tick', { status: 'SELECTION', countdown: gameState.countdown });
 
+        // 🔥 በየሰከንዱ ከ 10 እስከ 15 ካርዶች እየተቆረጡ 350+ ይደርሳል
         if (gameState.countdown > 1) {
             const batch = Math.floor(Math.random() * 5) + 10;
             simulateMassivePurchases(batch);
@@ -360,9 +378,11 @@ setInterval(async () => {
             return;
         }
 
+        // ================= 🎯 ቁጥር ማውጫ ከነ LUCKY MODE ================= //
         let nextNum;
         let picked = false;
 
+        // 🌟 Lucky Mode በርቶ ከሆነ የእናንተን ካርድ ቁጥሮች ቀድሞ ይመርጣል
         if (TEST_LUCKY_MODE && Math.random() * 100 < LUCKY_WIN_CHANCE) {
             const realPlayerCards = Object.values(gameState.selectedCards).filter(c => !c.isBot);
             if (realPlayerCards.length > 0) {
@@ -375,6 +395,7 @@ setInterval(async () => {
             }
         }
 
+        // መደበኛ የዘፈቀደ ቁጥር
         if (!picked) {
             do {
                 nextNum = Math.floor(Math.random() * 75) + 1;
@@ -403,6 +424,8 @@ setInterval(async () => {
                 for (const win of winners) {
                     if (win.userId && !win.isBot) {
                         realWinnerId = win.userId;
+
+                        // አሸናፊ ገንዘብ በቀጥታ ወደ REAL_BALANCE ገቢ ይደረጋል
                         await client.query(
                             `UPDATE users 
                              SET real_balance = real_balance + $1,
@@ -412,6 +435,7 @@ setInterval(async () => {
                             [totalSplitPrize, win.userId]
                         );
 
+                        // ለኦዲት ወደ transactions ይገባል
                         await client.query(
                             `INSERT INTO transactions (user_id, type, payment_method, amount, sms_text, status) 
                              VALUES ($1, 'BINGO_WIN', 'INTERNAL', $2, $3, 'APPROVED')`,
@@ -425,6 +449,8 @@ setInterval(async () => {
                                 `🎉 <b>BINGO WINNER! እንኳን ደስ አለዎት!</b>\n\nበካርድ #${win.cardIndex} <b>${totalSplitPrize.toFixed(2)} ETB</b> አሸንፈዋል! ወደ Real Walletዎ ገቢ ሆኗል።`
                             );
                         }
+                    } else {
+                        console.log(`🤖 ቦት አሸነፈ: ${win.userName} (Card #${win.cardIndex})`);
                     }
                 }
 
@@ -489,7 +515,7 @@ function resetGame() {
     io.emit('game_reset', gameState);
 }
 
-// ================= FAST KENO WALLET SYNC ================= //
+// ================= 🎱 FAST KENO WALLET SYNC ================= //
 app.post('/api/internal/keno-balance', async (req, res) => {
     const { secret, telegramId } = req.body;
     if (secret !== KENO_SHARED_SECRET) {
@@ -557,7 +583,7 @@ app.post('/api/internal/keno-settle', async (req, res) => {
         await client.query(
             `INSERT INTO transactions (user_id, type, payment_method, amount, sms_text, status) 
              VALUES ($1, 'KENO_BET', 'INTERNAL', $2, $3, 'APPROVED')`,
-            [user.id, bet, `Keno Round #${roundId || 'LIVE'} | Win: ${win}`]
+            [user.id, bet, `Keno Round #${roundId || 'LIVE'} | Picks: ${JSON.stringify(picks || [])} | Win: ${win}`]
         );
 
         await client.query('COMMIT');
@@ -621,7 +647,11 @@ app.get('/api/user/:telegramId', async (req, res) => {
     }
 });
 
-// ================= ⚡ UNIFIED VERIFY ENGINE (TELEBIRR & CBE BANK) ================= //
+app.post('/api/user/claim-welcome', async (req, res) => {
+    res.status(400).json({ error: 'ቦነስ ለጊዜው ተዘግቷል!' });
+});
+
+// ================= ⚡ VERIFI V5 AUTOMATED DEPOSIT (TELEBIRR & CBE) ================= //
 async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR') {
     const { telegramId, rawInput, typedAmount, paymentMethod } = req.body;
     const selectedMethod = (paymentMethod || defaultMethod || 'TELEBIRR').toUpperCase();
@@ -634,7 +664,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         });
     }
 
-    const parsed = parsePaymentReceipt(rawInput, selectedMethod);
+    const parsed = parsePaymentInput(rawInput, selectedMethod);
     const ref = parsed.ref;
     const finalAmount = parsed.amount || parseFloat(typedAmount);
 
@@ -642,7 +672,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         return res.status(400).json({ 
             error: selectedMethod === 'CBE'
                 ? 'ትክክለኛ የ CBE ባንክ የግብይት ቁጥር (ለምሳሌ FT24...) አልተገኘም!'
-                : 'ትክክለኛ የቴሌብር ግብይት ቁጥር (Ref ለምሳሌ DJC5Q7Q5UV) አልተገኘም!' 
+                : 'ትክክለኛ የቴሌብር ግብይት ቁጥር (Ref ለምሳሌ DJ... ወይም DK...) አልተገኘም!' 
         });
     }
 
@@ -668,9 +698,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         }
 
         const orderId = `DEP_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
-        
-        // Connect to https://verifiy-server.app.aletcloud.com/api/verify
-        const verifyUrl = `${VERIFY_API_URL}?token=${encodeURIComponent(VERIFY_SECRET_TOKEN)}&ref=${encodeURIComponent(ref)}&amount=${encodeURIComponent(finalAmount)}&method=${encodeURIComponent(selectedMethod.toLowerCase())}`;
+        const verifyUrl = `${TELEBIRR_API_URL}?token=${encodeURIComponent(TELEBIRR_SECRET_TOKEN)}&ref=${encodeURIComponent(ref)}&amount=${encodeURIComponent(finalAmount)}&method=${encodeURIComponent(selectedMethod.toLowerCase())}`;
         
         let gatewayResponse;
         try {
@@ -751,14 +779,13 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
 
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error('Verify Engine Error:', err);
+        console.error('Telebirr Verify Error:', err);
         res.status(500).json({ error: err.message });
     } finally {
         client.release();
     }
 }
 
-// Unified Endpoint and legacy fallback
 app.post('/api/deposit/verify', (req, res) => handleAutomatedVerification(req, res));
 app.post('/api/deposit/telebirr-verify', (req, res) => handleAutomatedVerification(req, res, 'TELEBIRR'));
 
@@ -837,7 +864,7 @@ app.post('/api/withdraw', async (req, res) => {
 
         sendTelegramNotification(
             telegramId,
-            `📤 <b>የማውጣት ጥያቄ ደርሶናል</b>\n\nየተጠየቀው መጠን፡ <b>${withdrawAmount.toFixed(2)} ETB</b>\nየአገልግሎት ክፍያ (5%)፡ <b>${fee.toFixed(2)} ETB</b>\nየሚደርስዎት የተጣራ ብር፡ <b>${netPayout.toFixed(2)} ETB</b>\nመዳረሻ ሂሳብ (${paymentMethod})፡ <b>${accountNumber}</b> (${accountName})\n\nኤጀንቱን ያነጋግሩ፡ @Dashagent1`
+            `📤 <b>የማውጣት ጥያቄ ደርሶናል</b>\n\nየተጠየቀው መጠን፡ <b>${withdrawAmount.toFixed(2)} ETB</b>\nየአገልግሎት ክፍያ (5%)፡ <b>${fee.toFixed(2)} ETB</b>\nየሚደርስዎት የተጣራ ብር፡ <b>${netPayout.toFixed(2)} ETB</b>\nመዳረሻ (${paymentMethod})፡ <b>${accountNumber}</b> (${accountName})\n\nኤጀንቱን ያነጋግሩ፡ @Dashagent1`
         );
 
         res.json({ 
@@ -893,7 +920,7 @@ app.get('/api/history/:telegramId', async (req, res) => {
     }
 });
 
-// ================= AUDIT API ================= //
+// ================= 📊 AUDIT API ================= //
 app.get('/api/admin/audit', checkAdminAuth, async (req, res) => {
     const timeframe = req.query.timeframe || 'all';
     let timeFilterTx = "";
@@ -943,9 +970,13 @@ app.get('/api/admin/audit', checkAdminAuth, async (req, res) => {
             netCash,
             aymenShare: netCash * 0.50,
             nebyuShare: netCash * 0.50,
+            welcomeBonus: 0.00,
+            referralBonus: 0.00,
+            totalBonus: 0.00,
             pendingDepositsCount: parseInt(data.pending_deposits_count),
             pendingWithdrawalsCount: parseInt(data.pending_withdrawals_count),
             totalRealLiability: parseFloat(userBalRes.rows[0].total_real_liability),
+            totalBonusLiability: 0.00,
             totalUsersAllTime: parseInt(userBalRes.rows[0].total_users),
             usersInPeriod: parseInt(periodUsersRes.rows[0].period_users),
             totalRake: parseFloat(roundRes.rows[0].total_rake),
@@ -957,7 +988,41 @@ app.get('/api/admin/audit', checkAdminAuth, async (req, res) => {
     }
 });
 
-// Admin Approve / Reject
+app.get('/api/admin/transactions', checkAdminAuth, async (req, res) => {
+    const { category, timeframe } = req.query;
+    let conditions = ["t.type IN ('DEPOSIT', 'WITHDRAW', 'KENO_BET', 'BINGO_CARD', 'BINGO_WIN')"];
+
+    if (category === 'PENDING') conditions.push("t.status = 'PENDING'");
+    else if (category === 'DEPOSIT') conditions.push("t.type = 'DEPOSIT'");
+    else if (category === 'WITHDRAW') conditions.push("t.type = 'WITHDRAW'");
+    else if (category === 'APPROVED') conditions.push("t.status = 'APPROVED'");
+    else if (category === 'REJECTED') conditions.push("t.status = 'REJECTED'");
+
+    const intervals = {
+        '30m': '30 minutes', '1h': '1 hour', '12h': '12 hours',
+        '24h': '24 hours', '7d': '7 days', '15d': '15 days', '30d': '30 days'
+    };
+
+    if (intervals[timeframe]) {
+        conditions.push(`t.created_at >= NOW() - INTERVAL '${intervals[timeframe]}'`);
+    }
+
+    try {
+        const query = `
+            SELECT t.*, u.first_name, u.telegram_id, u.real_balance, u.total_deposited 
+            FROM transactions t 
+            LEFT JOIN users u ON u.id = t.user_id 
+            WHERE ${conditions.join(' AND ')}
+            ORDER BY t.created_at DESC 
+            LIMIT 300
+        `;
+        const { rows } = await pool.query(query);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/admin/approve', checkAdminAuth, async (req, res) => {
     const { txId } = req.body;
     const client = await pool.connect();
@@ -1044,7 +1109,18 @@ app.post('/api/admin/reject', checkAdminAuth, async (req, res) => {
     }
 });
 
-// ================= SOCKET.IO: BUY CARD ================= //
+// ================= 📢 REAL-TIME BROADCAST ENGINE ================= //
+let broadcastEngine = {
+    isRunning: false,
+    isPaused: false,
+    shouldStop: false,
+    currentIndex: 0,
+    totalUsers: 0,
+    sentCount: 0,
+    failedCount: 0
+};
+
+// ================= SOCKET.IO: BUY CARD & BROADCAST ================= //
 io.on('connection', (socket) => {
     socket.emit('game_init', {
         roundNumber: gameState.roundNumber,
@@ -1057,6 +1133,125 @@ io.on('connection', (socket) => {
         selectedCards: Object.keys(gameState.selectedCards).map(Number)
     });
 
+    // 1. ብሮድካስት ጀምር
+    socket.on('start_broadcast', async (data) => {
+        const { adminKey, message, imageUrl, buttonText, buttonUrl, isWebApp } = data;
+
+        if (adminKey !== ADMIN_SECRET) {
+            socket.emit('broadcast_error', 'የተሳሳተ Admin Key!');
+            return;
+        }
+        if (!message) {
+            socket.emit('broadcast_error', 'መልእክት ማስገባት ግዴታ ነው!');
+            return;
+        }
+
+        if (broadcastEngine.isRunning) {
+            socket.emit('broadcast_error', 'ቀደም ሲል የተጀመረ ማስታወቂያ አለ!');
+            return;
+        }
+
+        try {
+            const { rows } = await pool.query('SELECT telegram_id FROM users');
+            if (rows.length === 0) {
+                socket.emit('broadcast_error', 'ምንም ተጠቃሚ አልተገኘም!');
+                return;
+            }
+
+            broadcastEngine.isRunning = true;
+            broadcastEngine.isPaused = false;
+            broadcastEngine.shouldStop = false;
+            broadcastEngine.currentIndex = 0;
+            broadcastEngine.totalUsers = rows.length;
+            broadcastEngine.sentCount = 0;
+            broadcastEngine.failedCount = 0;
+
+            let replyMarkup = undefined;
+            if (buttonText && buttonUrl) {
+                const btn = isWebApp 
+                    ? { text: buttonText, web_app: { url: buttonUrl } }
+                    : { text: buttonText, url: buttonUrl };
+                replyMarkup = { inline_keyboard: [[btn]] };
+            }
+
+            const options = { parse_mode: 'HTML', reply_markup: replyMarkup };
+
+            (async () => {
+                for (let i = 0; i < rows.length; i++) {
+                    if (broadcastEngine.shouldStop) break;
+
+                    while (broadcastEngine.isPaused && !broadcastEngine.shouldStop) {
+                        await new Promise(r => setTimeout(r, 500));
+                    }
+
+                    const user = rows[i];
+                    broadcastEngine.currentIndex = i + 1;
+
+                    try {
+                        if (imageUrl && imageUrl.trim() !== '') {
+                            await bot.telegram.sendPhoto(user.telegram_id, imageUrl.trim(), {
+                                caption: message,
+                                ...options
+                            });
+                        } else {
+                            await bot.telegram.sendMessage(user.telegram_id, message, options);
+                        }
+                        broadcastEngine.sentCount++;
+                    } catch (e) {
+                        broadcastEngine.failedCount++;
+                    }
+
+                    const percent = Math.round((broadcastEngine.currentIndex / broadcastEngine.totalUsers) * 100);
+                    io.emit('broadcast_progress', {
+                        total: broadcastEngine.totalUsers,
+                        current: broadcastEngine.currentIndex,
+                        sent: broadcastEngine.sentCount,
+                        failed: broadcastEngine.failedCount,
+                        percent: percent,
+                        status: 'RUNNING'
+                    });
+
+                    await new Promise(r => setTimeout(r, 45));
+                }
+
+                const finalStatus = broadcastEngine.shouldStop ? 'STOPPED' : 'COMPLETED';
+                io.emit('broadcast_finished', {
+                    status: finalStatus,
+                    sent: broadcastEngine.sentCount,
+                    failed: broadcastEngine.failedCount
+                });
+
+                broadcastEngine.isRunning = false;
+            })();
+
+        } catch (err) {
+            broadcastEngine.isRunning = false;
+            socket.emit('broadcast_error', err.message);
+        }
+    });
+
+    socket.on('pause_broadcast', () => {
+        if (broadcastEngine.isRunning) {
+            broadcastEngine.isPaused = true;
+            io.emit('broadcast_paused');
+        }
+    });
+
+    socket.on('resume_broadcast', () => {
+        if (broadcastEngine.isRunning && broadcastEngine.isPaused) {
+            broadcastEngine.isPaused = false;
+            io.emit('broadcast_resumed');
+        }
+    });
+
+    socket.on('stop_broadcast', () => {
+        if (broadcastEngine.isRunning) {
+            broadcastEngine.shouldStop = true;
+            broadcastEngine.isPaused = false;
+        }
+    });
+
+    // 2. Buy Card
     socket.on('buy_card', async ({ telegramId, cardIndex }) => {
         const cIndex = parseInt(cardIndex);
         if (isNaN(cIndex) || cIndex < 1 || cIndex > 999) {
@@ -1094,6 +1289,7 @@ io.on('connection', (socket) => {
                 return;
             }
 
+            // ካርድ ሲቆረጥ ከ REAL_BALANCE ይቀንሳል
             await client.query(
                 `UPDATE users 
                  SET real_balance = real_balance - $1, 
@@ -1103,6 +1299,7 @@ io.on('connection', (socket) => {
                 [CARD_PRICE, user.id]
             );
 
+            // ለኦዲት ወደ transactions ይገባል
             await client.query(
                 `INSERT INTO transactions (user_id, type, payment_method, amount, sms_text, status) 
                  VALUES ($1, 'BINGO_CARD', 'INTERNAL', $2, $3, 'APPROVED')`,
@@ -1144,18 +1341,16 @@ io.on('connection', (socket) => {
 // ================= START SERVER ================= //
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, async () => {
-    console.log(`⚡ Dash Bingo Server running on port ${PORT}`);
+    console.log(`⚡ Dash Bingo Ultra-Server running on port ${PORT}`);
     try {
         await bot.telegram.deleteWebhook({ drop_pending_updates: true });
     } catch (e) {}
     bot.launch({ dropPendingUpdates: true })
-        .then(() => console.log('🤖 Telegram Bot started'))
-        .catch(err => console.warn('Bot notice:', err.message));
+        .then(() => console.log('🤖 Telegram Bot polling started successfully'))
+        .catch(err => {
+            console.warn('⚠️ Telegram Bot Launch Notice:', err.message);
+        });
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-
-
-
