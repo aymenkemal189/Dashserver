@@ -1,5 +1,3 @@
-
-
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
@@ -15,13 +13,12 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '100kb' }));
+app.use(express.json({ limit: '200kb' }));
 app.use(express.static(__dirname));
 
 // ================= SECURITY HELPERS ================= //
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'super_secret_dash_admin_2026';
 const KENO_SHARED_SECRET = process.env.KENO_SHARED_SECRET || 'FAST_KENO_DASH_SECRET_KEY_2026';
-// Set REQUIRE_TG_AUTH=true once your Bingo frontend sends `x-telegram-init-data` header
 const REQUIRE_TG_AUTH = process.env.REQUIRE_TG_AUTH === 'true';
 
 function safeCompare(a, b) {
@@ -190,7 +187,7 @@ async function sendTelegramNotification(telegramId, message) {
     }
 }
 
-// ================= VERIFI V5 CREDENTIALS & REGEX ================= //
+// ================= VERIFI V5 CREDENTIALS & REGEX (FT + V2 + TELEBIRR) ================= //
 const TELEBIRR_API_URL = process.env.TELEBIRR_API_URL || process.env.VERIFY_API_URL || 'https://verifiy-server.app.aletcloud.com/api/verify';
 const TELEBIRR_SECRET_TOKEN = process.env.TELEBIRR_SECRET_TOKEN || process.env.VERIFY_SECRET_TOKEN || 'Verifi_Prod_9842_Aymen_X9!2026';
 const MINIMUM_DEPOSIT = 50;
@@ -201,12 +198,25 @@ function parsePaymentInput(input, method = 'TELEBIRR') {
     let amount = null;
 
     if (String(method).toUpperCase() === 'CBE') {
-        const cbeMatch = text.match(/\b(FT[A-Z0-9]{8,14})\b/i) || text.match(/(?:Txn\s*ID|Txn\s*Ref|Ref|ቁጥር|ትዕዛዝ)\s*[:፡-]?\s*([A-Z0-9]{8,16})/i);
-        if (cbeMatch) ref = cbeMatch[1].toUpperCase();
-        else if (/^[A-Z0-9]{8,18}$/i.test(text)) ref = text.toUpperCase();
+        const ftMatch = text.match(/\b(FT[A-Z0-9]{8,15})\b/i);
+        if (ftMatch) {
+            ref = ftMatch[1].toUpperCase();
+        } else {
+            // Preserve exact case for CBE v2-... receipt token
+            const v2Match = text.match(/(?:cbe\.com\.et\/)?\b(v2-[A-Za-z0-9_-]{6,})/i);
+            if (v2Match) {
+                ref = 'v2-' + v2Match[1].replace(/^v2-/i, '');
+            } else {
+                const legacyMatch = text.match(/(?:Txn\s*ID|Txn\s*Ref|Ref|ቁጥር|ትዕዛዝ)\s*[:፡-]?\s*([A-Z0-9]{8,16})/i);
+                if (legacyMatch) ref = legacyMatch[1].toUpperCase();
+                else if (/^[A-Z0-9]{8,18}$/i.test(text)) ref = text.toUpperCase();
+            }
+        }
     } else {
+        const rcMatch = text.match(/receipt\/([A-Z0-9]{8,14})\b/i);
         const tbMatch = text.match(/\b(D[A-Z][A-Z0-9]{8,12})\b/i);
-        if (tbMatch) ref = tbMatch[1].toUpperCase();
+        if (rcMatch) ref = rcMatch[1].toUpperCase();
+        else if (tbMatch) ref = tbMatch[1].toUpperCase();
         else {
             const genericMatch = text.match(/transaction\s*(?:number|id|ref|no)?\s*(?:is|:)?\s*([A-Z0-9]{8,14})/i);
             if (genericMatch) ref = genericMatch[1].toUpperCase();
@@ -214,7 +224,9 @@ function parsePaymentInput(input, method = 'TELEBIRR') {
         }
     }
 
-    const amtMatch = text.match(/(?:ETB|Birr|ብር)\s*([0-9,]+(?:\.[0-9]{1,2})?)/i) || text.match(/\b([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|Birr|ብር)/i);
+    const stripped = text.replace(/(?:ቀሪ\s*ሂሳብ|current\s*balance|balance)[^0-9]{0,15}[0-9,]+(?:\.[0-9]{1,2})?\s*(?:ብር|ETB|Birr)?/ig, ' ');
+    const amtMatch = stripped.match(/(?:ETB|Birr|ብር)\s*([0-9,]+(?:\.[0-9]{1,2})?)/i)
+        || stripped.match(/\b([0-9,]+(?:\.[0-9]{1,2})?)\s*(?:ETB|Birr|ብር)/i);
     if (amtMatch) amount = parseFloat(amtMatch[1].replace(/,/g, ''));
 
     return { ref, amount };
@@ -378,7 +390,6 @@ function resetGame() {
     io.emit('game_reset', gameState);
 }
 
-// Guarded non-overlapping Bingo loop
 async function runBingoLoop() {
     try {
         if (gameState.status === 'SELECTION') {
@@ -573,7 +584,6 @@ app.post('/api/internal/keno-settle', async (req, res) => {
         const user = userRes.rows[0];
         const currentBal = parseFloat(user.real_balance || 0);
 
-        // Idempotency guard: prevent double debit / double payout on network retries
         if (extRef) {
             const dup = await client.query('SELECT id FROM transactions WHERE external_ref = $1', [extRef]);
             if (dup.rows.length > 0) {
@@ -683,7 +693,7 @@ app.post('/api/user/claim-welcome', (req, res) => {
     res.status(400).json({ error: 'ቦነስ ለጊዜው ተዘግቷል!' });
 });
 
-// ================= ⚡ VERIFI V5 AUTOMATED DEPOSIT (NO LONG DB LOCK DURING FETCH) ================= //
+// ================= ⚡ VERIFI V5 AUTOMATED DEPOSIT (FT + V2 + TELEBIRR) ================= //
 async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR') {
     const telegramId = req.verifiedTelegramId || req.body.telegramId;
     const { rawInput, typedAmount, paymentMethod } = req.body;
@@ -696,7 +706,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
     if (!telegramId || !rawInput) {
         return res.status(400).json({
             error: selectedMethod === 'CBE'
-                ? 'እባክዎ የ CBE ንግድ ባንክ የግብይት ቁጥር (FT...) ወይም ሙሉ SMS ያስገቡ!'
+                ? 'እባክዎ የ CBE ንግድ ባንክ የግብይት ቁጥር (FT... ወይም v2-...) ወይም ሙሉ SMS ያስገቡ!'
                 : 'እባክዎ የቴሌብር ግብይት ቁጥር (Ref) ወይም ሙሉ SMS ያስገቡ!'
         });
     }
@@ -708,7 +718,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
     if (!ref || ref.length < 7) {
         return res.status(400).json({
             error: selectedMethod === 'CBE'
-                ? 'ትክክለኛ የ CBE ባንክ የግብይት ቁጥር (ለምሳሌ FT24...) አልተገኘም!'
+                ? 'ትክክለኛ የ CBE ባንክ የግብይት ቁጥር (FT... ወይም v2-...) አልተገኘም!'
                 : 'ትክክለኛ የቴሌብር ግብይት ቁጥር (Ref ለምሳሌ DJ... ወይም DK...) አልተገኘም!'
         });
     }
@@ -717,7 +727,6 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         return res.status(400).json({ error: `ዝቅተኛው የዴፖዚት መጠን ${MINIMUM_DEPOSIT} ETB ነው!` });
     }
 
-    // 1. Pre-flight check WITHOUT holding open a DB transaction lock
     try {
         const userPre = await pool.query('SELECT id FROM users WHERE telegram_id = $1', [telegramId]);
         if (userPre.rows.length === 0) return res.status(404).json({ error: 'ተጠቃሚው አልተገኘም' });
@@ -728,7 +737,6 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         return res.status(500).json({ error: e.message });
     }
 
-    // 2. Call external Verifi V5 Gateway with strict 8s timeout
     const verifyUrl = `${TELEBIRR_API_URL}?token=${encodeURIComponent(TELEBIRR_SECRET_TOKEN)}&ref=${encodeURIComponent(ref)}&amount=${encodeURIComponent(finalAmount)}&method=${encodeURIComponent(selectedMethod.toLowerCase())}`;
     let gatewayResponse;
     const controller = new AbortController();
@@ -749,6 +757,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
 
     const gStatus = gatewayResponse?.status;
     if (gStatus === 'Pending') return res.status(400).json({ error: 'ክፍያው ገና አልደረሰም፤ እባክዎ ጥቂት ሰከንዶች ጠብቀው እንደገና ይሞክሩ።' });
+    if (gStatus === 'Resolving') return res.status(400).json({ error: 'የ CBE ደረሰኝ እየተረጋገጠ ነው፤ እባክዎ 10 ሰከንድ ጠብቀው እንደገና ይሞክሩ!' });
     if (gStatus === 'AlreadyUsed') return res.status(400).json({ error: 'ይህ የግብይት ቁጥር ቀደም ሲል ጥቅም ላይ ውሏል!' });
     if (gStatus === 'InvalidAmount') return res.status(400).json({ error: 'የተላከው የገንዘብ መጠን ከተጠየቀው መጠን ጋር አይዛመድም።' });
     if (gStatus === 'Invalid_Transaction_Type') return res.status(400).json({ error: 'ይህ የገንዘብ መቀበያ ሳይሆን የወጪ ማስተላለፊያ ደረሰኝ ነው፤ ውድቅ ተደርጓል።' });
@@ -763,7 +772,10 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         return res.status(400).json({ error: 'የተረጋገጠው የገንዘብ መጠን ልክ አይደለም።' });
     }
 
-    // 3. Fast atomic credit with trx_ref race protection
+    const canonicalRef = gatewayResponse?.ref_no
+        ? String(gatewayResponse.ref_no).trim().toUpperCase()
+        : ref;
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -774,7 +786,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         }
         const user = userRes.rows[0];
 
-        const refCheck = await client.query('SELECT id FROM transactions WHERE trx_ref = $1', [ref]);
+        const refCheck = await client.query('SELECT id FROM transactions WHERE trx_ref = $1 OR trx_ref = $2', [canonicalRef, ref]);
         if (refCheck.rows.length > 0) {
             await client.query('ROLLBACK');
             return res.status(400).json({ error: 'ይህ የግብይት ቁጥር ቀደም ሲል ጥቅም ላይ ውሏል!' });
@@ -791,7 +803,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         await client.query(
             `INSERT INTO transactions (user_id, type, payment_method, amount, gross_amount, trx_ref, order_id, status) 
              VALUES ($1, 'DEPOSIT', $2, $3, $3, $4, $5, 'APPROVED')`,
-            [user.id, selectedMethod, verifiedAmount, ref, orderId]
+            [user.id, selectedMethod, verifiedAmount, canonicalRef, orderId]
         );
 
         await client.query('COMMIT');
@@ -799,13 +811,13 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         const methodNameAmharic = selectedMethod === 'CBE' ? 'CBE ንግድ ባንክ' : 'ቴሌብር';
         sendTelegramNotification(
             telegramId,
-            `✅ <b>የ${methodNameAmharic} ዴፖዚትዎ በራስ-ሰር ጸድቋል!</b>\n\nመጠን፡ <b>${verifiedAmount.toFixed(2)} ETB</b>\nRef: <code>${ref}</code>\nየ Real Wallet ሒሳብዎ፡ <b>${newRealBalance.toFixed(2)} ETB</b>\n\nአሁኑኑ ገብተው ይጫወቱ!`
+            `✅ <b>የ${methodNameAmharic} ዴፖዚትዎ በራስ-ሰር ጸድቋል!</b>\n\nመጠን፡ <b>${verifiedAmount.toFixed(2)} ETB</b>\nRef: <code>${canonicalRef}</code>\nየ Real Wallet ሒሳብዎ፡ <b>${newRealBalance.toFixed(2)} ETB</b>\n\nአሁኑኑ ገብተው ይጫወቱ!`
         );
 
         res.json({
             success: true,
             amount: verifiedAmount,
-            ref,
+            ref: canonicalRef,
             paymentMethod: selectedMethod,
             newRealBalance,
             message: `🎉 እንኳን ደስ አለዎት! ${verifiedAmount.toFixed(2)} ETB በራስ-ሰር ተረጋግጦ ወደ Real Walletዎ ገቢ ሆኗል!`
@@ -815,7 +827,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
         if (err.code === '23505') {
             return res.status(400).json({ error: 'ይህ የግብይት ቁጥር ቀደም ሲል ጥቅም ላይ ውሏል!' });
         }
-        console.error('Telebirr Verify Error:', err);
+        console.error('Deposit Verify Error:', err);
         res.status(500).json({ error: err.message });
     } finally {
         client.release();
@@ -825,7 +837,7 @@ async function handleAutomatedVerification(req, res, defaultMethod = 'TELEBIRR')
 app.post('/api/deposit/verify', resolveTelegramUser, (req, res) => handleAutomatedVerification(req, res));
 app.post('/api/deposit/telebirr-verify', resolveTelegramUser, (req, res) => handleAutomatedVerification(req, res, 'TELEBIRR'));
 
-// ================= WITHDRAWAL API (FULL GROSS AMOUNT TRACKED) ================= //
+// ================= WITHDRAWAL API ================= //
 app.post('/api/withdraw', resolveTelegramUser, async (req, res) => {
     const telegramId = req.verifiedTelegramId || req.body.telegramId;
     const { amount, accountNumber, accountName, paymentMethod = 'TELEBIRR' } = req.body;
@@ -1056,6 +1068,51 @@ app.get('/api/admin/transactions', checkAdminAuth, async (req, res) => {
     }
 });
 
+// Broadcast Audience Counts & User Picker API for admin.html
+app.get('/api/admin/broadcast/audience-counts', checkAdminAuth, async (req, res) => {
+    try {
+        const { rows } = await pool.query(`
+            SELECT
+                COUNT(*)::int AS all_users,
+                COUNT(*) FILTER (WHERE COALESCE(total_deposited, 0) > 0)::int AS depositors,
+                COUNT(*) FILTER (WHERE COALESCE(total_deposited, 0) <= 0)::int AS non_depositors,
+                COUNT(*) FILTER (WHERE COALESCE(real_balance, 0) >= 10)::int AS active_balance,
+                COUNT(*) FILTER (WHERE COALESCE(real_balance, 0) < 10)::int AS zero_balance,
+                COUNT(*) FILTER (WHERE COALESCE(cards_bought_this_week, 0) > 0)::int AS weekly_players,
+                COUNT(*) FILTER (WHERE COALESCE(total_won, 0) > 0)::int AS winners,
+                COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::int AS new_24h,
+                COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')::int AS new_7d
+            FROM users
+        `);
+        res.json(rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/users/list', checkAdminAuth, async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const limit = Math.min(Math.max(parseInt(req.query.limit || '100', 10), 1), 300);
+    try {
+        const { rows } = q
+            ? await pool.query(
+                `SELECT telegram_id, first_name, username, real_balance, total_deposited, total_won
+                 FROM users
+                 WHERE first_name ILIKE $1 OR username ILIKE $1 OR CAST(telegram_id AS TEXT) ILIKE $1
+                 ORDER BY id DESC LIMIT $2`,
+                [`%${q}%`, limit]
+            )
+            : await pool.query(
+                `SELECT telegram_id, first_name, username, real_balance, total_deposited, total_won
+                 FROM users ORDER BY id DESC LIMIT $1`,
+                [limit]
+            );
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/admin/approve', checkAdminAuth, async (req, res) => {
     const { txId } = req.body;
     const client = await pool.connect();
@@ -1094,7 +1151,7 @@ app.post('/api/admin/approve', checkAdminAuth, async (req, res) => {
         if (tx.type === 'DEPOSIT') {
             sendTelegramNotification(
                 tx.telegram_id,
-                `✅ <b>ዴፖዚትዎ ጸድቋል!</b>\n\nየ <b>${parseFloat(tx.amount).toFixed(2)} ETB</b> ክፍያዎ ተረጋግጦ ወደ Real Walletዎ ገቢ ሆኗል። አሁኑኑ ገብተው ይጫወቱ!`
+                `✅ <b>የዴፖዚትዎ ጸድቋል!</b>\n\nየ <b>${parseFloat(tx.amount).toFixed(2)} ETB</b> ክፍያዎ ተረጋግጦ ወደ Real Walletዎ ገቢ ሆኗል። አሁኑኑ ገብተው ይጫወቱ!`
             );
         } else {
             sendTelegramNotification(
@@ -1112,7 +1169,6 @@ app.post('/api/admin/approve', checkAdminAuth, async (req, res) => {
     }
 });
 
-// Fixed: Enforces PENDING status + refunds full gross_amount (including the 5% fee)
 app.post('/api/admin/reject', checkAdminAuth, async (req, res) => {
     const { txId } = req.body;
     const client = await pool.connect();
@@ -1157,7 +1213,7 @@ app.post('/api/admin/reject', checkAdminAuth, async (req, res) => {
     }
 });
 
-// ================= 📢 REAL-TIME BROADCAST ENGINE ================= //
+// ================= 📢 HIGH-SPEED TARGETED BROADCAST ENGINE ================= //
 const broadcastEngine = {
     isRunning: false,
     isPaused: false,
@@ -1165,8 +1221,64 @@ const broadcastEngine = {
     currentIndex: 0,
     totalUsers: 0,
     sentCount: 0,
-    failedCount: 0
+    failedCount: 0,
+    audience: 'ALL'
 };
+
+const AUDIENCE_QUERIES = {
+    ALL: 'SELECT telegram_id FROM users ORDER BY id DESC',
+    DEPOSITORS: 'SELECT telegram_id FROM users WHERE COALESCE(total_deposited, 0) > 0 ORDER BY id DESC',
+    NON_DEPOSITORS: 'SELECT telegram_id FROM users WHERE COALESCE(total_deposited, 0) <= 0 ORDER BY id DESC',
+    ACTIVE_BALANCE: 'SELECT telegram_id FROM users WHERE COALESCE(real_balance, 0) >= 10 ORDER BY id DESC',
+    ZERO_BALANCE: 'SELECT telegram_id FROM users WHERE COALESCE(real_balance, 0) < 10 ORDER BY id DESC',
+    WEEKLY_PLAYERS: 'SELECT telegram_id FROM users WHERE COALESCE(cards_bought_this_week, 0) > 0 ORDER BY id DESC',
+    WINNERS: 'SELECT telegram_id FROM users WHERE COALESCE(total_won, 0) > 0 ORDER BY id DESC',
+    NEW_24H: "SELECT telegram_id FROM users WHERE created_at >= NOW() - INTERVAL '24 hours' ORDER BY id DESC",
+    NEW_7D: "SELECT telegram_id FROM users WHERE created_at >= NOW() - INTERVAL '7 days' ORDER BY id DESC"
+};
+
+function parseCustomTelegramIds(rawIds) {
+    if (Array.isArray(rawIds)) {
+        return [...new Set(rawIds.map(v => Number(String(v).trim())).filter(n => Number.isFinite(n) && n > 0))];
+    }
+    if (typeof rawIds === 'string') {
+        return [...new Set(
+            rawIds
+                .split(/[\s,;]+/)
+                .map(v => Number(v.trim()))
+                .filter(n => Number.isFinite(n) && n > 0)
+        )];
+    }
+    return [];
+}
+
+async function sendBroadcastSingle(telegramId, message, imageUrl, options) {
+    const cleanImg = imageUrl && String(imageUrl).trim();
+    const attemptSend = async () => {
+        if (cleanImg) {
+            await bot.telegram.sendPhoto(telegramId, cleanImg, { caption: message, ...options });
+        } else {
+            await bot.telegram.sendMessage(telegramId, message, options);
+        }
+    };
+
+    try {
+        await attemptSend();
+        return true;
+    } catch (err) {
+        const retryAfter = err?.response?.parameters?.retry_after;
+        if (err?.response?.error_code === 429 && retryAfter) {
+            await new Promise(r => setTimeout(r, (Number(retryAfter) * 1000) + 250));
+            try {
+                await attemptSend();
+                return true;
+            } catch {
+                return false;
+            }
+        }
+        return false;
+    }
+}
 
 io.on('connection', (socket) => {
     socket.emit('game_init', {
@@ -1180,8 +1292,41 @@ io.on('connection', (socket) => {
         selectedCards: Object.keys(gameState.selectedCards).map(Number)
     });
 
+    socket.on('get_broadcast_counts', async ({ adminKey } = {}) => {
+        if (!safeCompare(String(adminKey || ''), ADMIN_SECRET)) return;
+        try {
+            const { rows } = await pool.query(`
+                SELECT
+                    COUNT(*)::int AS "ALL",
+                    COUNT(*) FILTER (WHERE COALESCE(total_deposited, 0) > 0)::int AS "DEPOSITORS",
+                    COUNT(*) FILTER (WHERE COALESCE(total_deposited, 0) <= 0)::int AS "NON_DEPOSITORS",
+                    COUNT(*) FILTER (WHERE COALESCE(real_balance, 0) >= 10)::int AS "ACTIVE_BALANCE",
+                    COUNT(*) FILTER (WHERE COALESCE(real_balance, 0) < 10)::int AS "ZERO_BALANCE",
+                    COUNT(*) FILTER (WHERE COALESCE(cards_bought_this_week, 0) > 0)::int AS "WEEKLY_PLAYERS",
+                    COUNT(*) FILTER (WHERE COALESCE(total_won, 0) > 0)::int AS "WINNERS",
+                    COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '24 hours')::int AS "NEW_24H",
+                    COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days')::int AS "NEW_7D"
+                FROM users
+            `);
+            socket.emit('broadcast_counts', rows[0]);
+        } catch (err) {
+            socket.emit('broadcast_error', err.message);
+        }
+    });
+
     socket.on('start_broadcast', async (data) => {
-        const { adminKey, message, imageUrl, buttonText, buttonUrl, isWebApp } = data;
+        const {
+            adminKey,
+            message,
+            imageUrl,
+            buttonText,
+            buttonUrl,
+            isWebApp,
+            targetAudience = 'ALL',
+            customTelegramIds = [],
+            speedMode = 'FAST'
+        } = data || {};
+
         if (!safeCompare(String(adminKey || ''), ADMIN_SECRET)) {
             socket.emit('broadcast_error', 'የተሳሳተ Admin Key!');
             return;
@@ -1196,19 +1341,38 @@ io.on('connection', (socket) => {
         }
 
         try {
-            const { rows } = await pool.query('SELECT telegram_id FROM users');
-            if (rows.length === 0) {
-                socket.emit('broadcast_error', 'ምንም ተጠቃሚ አልተገኘም!');
+            const audienceKey = String(targetAudience || 'ALL').toUpperCase();
+            let targetIds = [];
+
+            if (audienceKey === 'CUSTOM') {
+                targetIds = parseCustomTelegramIds(customTelegramIds);
+                if (targetIds.length === 0) {
+                    socket.emit('broadcast_error', 'እባክዎ ቢያንስ 1 ትክክለኛ Telegram ID ይምረጡ ወይም ያስገቡ!');
+                    return;
+                }
+            } else {
+                const sql = AUDIENCE_QUERIES[audienceKey] || AUDIENCE_QUERIES.ALL;
+                const { rows } = await pool.query(sql);
+                targetIds = rows.map(r => r.telegram_id).filter(Boolean);
+            }
+
+            if (targetIds.length === 0) {
+                socket.emit('broadcast_error', 'በተመረጠው ምድብ ውስጥ ምንም ተጠቃሚ አልተገኘም!');
                 return;
             }
+
+            const speedKey = String(speedMode || 'FAST').toUpperCase();
+            const batchSize = speedKey === 'SAFE' ? 6 : speedKey === 'NORMAL' ? 12 : 22;
+            const minBatchDurationMs = speedKey === 'SAFE' ? 1000 : speedKey === 'NORMAL' ? 950 : 900;
 
             broadcastEngine.isRunning = true;
             broadcastEngine.isPaused = false;
             broadcastEngine.shouldStop = false;
             broadcastEngine.currentIndex = 0;
-            broadcastEngine.totalUsers = rows.length;
+            broadcastEngine.totalUsers = targetIds.length;
             broadcastEngine.sentCount = 0;
             broadcastEngine.failedCount = 0;
+            broadcastEngine.audience = audienceKey;
 
             let replyMarkup;
             if (buttonText && buttonUrl) {
@@ -1221,25 +1385,25 @@ io.on('connection', (socket) => {
             const options = { parse_mode: 'HTML', reply_markup: replyMarkup };
 
             (async () => {
-                for (let i = 0; i < rows.length; i++) {
+                for (let i = 0; i < targetIds.length; i += batchSize) {
                     if (broadcastEngine.shouldStop) break;
                     while (broadcastEngine.isPaused && !broadcastEngine.shouldStop) {
-                        await new Promise(r => setTimeout(r, 500));
+                        await new Promise(r => setTimeout(r, 350));
                     }
+                    if (broadcastEngine.shouldStop) break;
 
-                    const user = rows[i];
-                    broadcastEngine.currentIndex = i + 1;
+                    const batchStart = Date.now();
+                    const chunk = targetIds.slice(i, i + batchSize);
 
-                    try {
-                        if (imageUrl && imageUrl.trim() !== '') {
-                            await bot.telegram.sendPhoto(user.telegram_id, imageUrl.trim(), { caption: message, ...options });
-                        } else {
-                            await bot.telegram.sendMessage(user.telegram_id, message, options);
-                        }
-                        broadcastEngine.sentCount++;
-                    } catch {
-                        broadcastEngine.failedCount++;
+                    const results = await Promise.all(
+                        chunk.map(tgId => sendBroadcastSingle(tgId, message, imageUrl, options))
+                    );
+
+                    for (const ok of results) {
+                        if (ok) broadcastEngine.sentCount++;
+                        else broadcastEngine.failedCount++;
                     }
+                    broadcastEngine.currentIndex = Math.min(i + chunk.length, targetIds.length);
 
                     const percent = Math.round((broadcastEngine.currentIndex / broadcastEngine.totalUsers) * 100);
                     io.emit('broadcast_progress', {
@@ -1248,16 +1412,22 @@ io.on('connection', (socket) => {
                         sent: broadcastEngine.sentCount,
                         failed: broadcastEngine.failedCount,
                         percent,
+                        audience: broadcastEngine.audience,
                         status: 'RUNNING'
                     });
 
-                    await new Promise(r => setTimeout(r, 45));
+                    const elapsed = Date.now() - batchStart;
+                    const waitMs = Math.max(40, minBatchDurationMs - elapsed);
+                    if (broadcastEngine.currentIndex < targetIds.length) {
+                        await new Promise(r => setTimeout(r, waitMs));
+                    }
                 }
 
                 io.emit('broadcast_finished', {
                     status: broadcastEngine.shouldStop ? 'STOPPED' : 'COMPLETED',
                     sent: broadcastEngine.sentCount,
-                    failed: broadcastEngine.failedCount
+                    failed: broadcastEngine.failedCount,
+                    audience: broadcastEngine.audience
                 });
                 broadcastEngine.isRunning = false;
             })();
@@ -1403,7 +1573,3 @@ server.listen(PORT, async () => {
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-
-
-
